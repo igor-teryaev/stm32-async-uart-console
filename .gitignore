@@ -1,0 +1,16 @@
+/Debug/
+/Release/
+/build/
+
+*.elf
+*.map
+*.list
+*.bin
+*.hex
+*.o
+*.d
+*.su
+*.cyclo
+*.launch
+/.settings/language.settings.xml
+/.settings/com.st.stm32cube.ide.mcu.sfrview.prefs
