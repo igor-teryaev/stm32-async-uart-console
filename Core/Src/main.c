@@ -45,8 +45,16 @@ typedef enum {
 /* USER CODE BEGIN PD */
 
 #define BUTTON_DEBOUNCE_MS 30U
-#define UART_RX_BUFFER_SIZE 8U
+#define UART_DMA_RX_BUFFER_SIZE 256U
 #define UART_TX_BUFFER_SIZE 128U
+
+_Static_assert(
+    UART_DMA_RX_BUFFER_SIZE > 1U &&
+    (UART_DMA_RX_BUFFER_SIZE &
+        (UART_DMA_RX_BUFFER_SIZE - 1U)) == 0U,
+    "UART DMA RX buffer size must be a power of two"
+);
+
 /* USER CODE END PD */
 
 /* Private macro -------------------------------------------------------------*/
@@ -66,15 +74,18 @@ static volatile bool debounce_pending = false;
 static const uint8_t button_message[] = "BUTTON PRESSED\r\n";
 static bool stable_pressed = false;
 
-static uint8_t uart_rx_byte;
 static volatile uint32_t uart_rx_count = 0;
 static uint32_t pending_button_messages = 0;
 
 //кільцевий буфер для прийома
-static uint8_t uart_rx_buffer[UART_RX_BUFFER_SIZE];
-static volatile uint8_t uart_rx_head = 0;
-static volatile uint8_t uart_rx_tail = 0;
-static volatile uint32_t uart_rx_overflow_count = 0;
+static uint8_t uart_dma_rx_buffer[UART_DMA_RX_BUFFER_SIZE];
+
+static volatile uint32_t uart_dma_produced = 0U;
+static uint32_t uart_dma_consumed = 0U;
+
+static uint16_t uart_dma_old_position = 0U;
+
+
 
 //кільцевий буфер для передачі
 static uint8_t uart_tx_buffer[UART_TX_BUFFER_SIZE];
@@ -88,6 +99,7 @@ static volatile uint32_t uart_tx_error_count = 0;
 static volatile uint32_t uart_rx_error_count = 0;
 static volatile uint32_t uart_rx_last_error = HAL_UART_ERROR_NONE;
 static volatile uint32_t uart_rx_restart_error_count = 0;
+static volatile uint32_t uart_rx_overflow_count = 0;
 
 static volatile uint32_t uart_rx_discarded_error_byte_count = 0;
 
@@ -116,12 +128,10 @@ void SystemClock_Config(void);
 /* USER CODE BEGIN PFP */
 
 static ButtonEvent button_debounce_poll(void);
-static bool uart_rx_push_from_isr(uint8_t byte);
 static bool uart_rx_pop(uint8_t *byte);
 static bool uart_tx_write(const uint8_t *data, size_t length);
 void HAL_UART_ErrorCallback(UART_HandleTypeDef *huart);
-void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart);
-
+void HAL_UARTEx_RxEventCallback(UART_HandleTypeDef *huart, uint16_t size);
 //для передачі строки/команди через UART
 static bool command_feed_byte(uint8_t byte);
 static void command_process(void);
@@ -165,7 +175,11 @@ int main(void)
   MX_USART2_UART_Init();
   /* USER CODE BEGIN 2 */
 
-  if (HAL_UART_Receive_IT(&huart2, &uart_rx_byte, 1U) != HAL_OK)
+  if (HAL_UARTEx_ReceiveToIdle_DMA(
+          &huart2,
+          uart_dma_rx_buffer,
+          UART_DMA_RX_BUFFER_SIZE
+      ) != HAL_OK)
   {
       Error_Handler();
   }
@@ -421,31 +435,14 @@ static void command_process(void)
     }
 }
 
-//Повторно запускаємо RX лише для ORE, тому що саме ця помилка викликає UART_EndRxTransfer()
-void HAL_UART_ErrorCallback(UART_HandleTypeDef *huart)
+void HAL_UART_ErrorCallback(
+    UART_HandleTypeDef *huart
+)
 {
     if (huart->Instance == USART2)
     {
-        uint32_t error = huart->ErrorCode;
-
-        uart_rx_last_error = error;
+        uart_rx_last_error = huart->ErrorCode;
         uart_rx_error_count++;
-
-        /*
-         * Якщо HAL завершив поточний RX transfer,
-         * запускаємо приймання знову.
-         */
-        if (huart->RxState == HAL_UART_STATE_READY)
-        {
-            if (HAL_UART_Receive_IT(
-                    huart,
-                    &uart_rx_byte,
-                    1U
-                ) != HAL_OK)
-            {
-                uart_rx_restart_error_count++;
-            }
-        }
     }
 }
 
@@ -545,41 +542,43 @@ void HAL_UART_TxCpltCallback(UART_HandleTypeDef *huart)
     }
 }
 
-
-
-static bool uart_rx_push_from_isr(uint8_t byte)
-{
-
-    // 1. Обчислити next_head
-	uint8_t next_head = (uart_rx_head+1U)&(UART_RX_BUFFER_SIZE-1U);
-    // 2. Перевірити стан full
-    if((next_head)==uart_rx_tail)
-    // 3. При overflow збільшити overflow_count і повернути false
-    {
-        uart_rx_overflow_count++;
-        return false;
-    }
-    // 4. Записати byte
-    uart_rx_buffer[uart_rx_head] = byte;
-    // 5. Оновити head
-    uart_rx_head = next_head;
-    // 6. Повернути true
-    return true;
-}
-
 static bool uart_rx_pop(uint8_t *byte)
 {
-    // Вважаємо, що byte != NULL
+    if (byte == NULL)
+    {
+        return false;
+    }
 
-    // 1. Перевірити empty: head == tail
-    if(uart_rx_head == uart_rx_tail) return false;
-    // 2. Якщо empty — повернути false
-    //if(head == tail) return false; це воно і є
-    // 3. Записати buffer[tail] за адресою byte
-    *byte = uart_rx_buffer[uart_rx_tail];
-    // 4. Пересунути tail із wrap-around
-    uart_rx_tail = (uart_rx_tail+1U)&(UART_RX_BUFFER_SIZE-1U);
-    // 5. Повернути true
+    uint32_t produced_snapshot =
+        uart_dma_produced;
+
+    uint32_t pending =
+        produced_snapshot - uart_dma_consumed;
+
+    if (pending == 0U)
+    {
+        return false;
+    }
+
+    if (pending > UART_DMA_RX_BUFFER_SIZE)
+    {
+        uint32_t lost =
+            pending - UART_DMA_RX_BUFFER_SIZE;
+
+        uart_rx_overflow_count += lost;
+
+        uart_dma_consumed =
+            produced_snapshot -
+            UART_DMA_RX_BUFFER_SIZE;
+    }
+
+    uint32_t index =
+        uart_dma_consumed &
+        (UART_DMA_RX_BUFFER_SIZE - 1U);
+
+    *byte = uart_dma_rx_buffer[index];
+    uart_dma_consumed++;
+
     return true;
 }
 
@@ -592,34 +591,28 @@ void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin)
     }
 }
 
-void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)
+void HAL_UARTEx_RxEventCallback(
+    UART_HandleTypeDef *huart,
+    uint16_t size
+)
 {
-    if (huart->Instance == USART2)
+    if (huart->Instance != USART2)
     {
-        uart_rx_count++;
-
-        if (huart->ErrorCode == HAL_UART_ERROR_NONE)
-        {
-            (void)uart_rx_push_from_isr(uart_rx_byte);
-
-            if (HAL_UART_Receive_IT(
-                    huart,
-                    &uart_rx_byte,
-                    1U
-                ) != HAL_OK)
-            {
-                uart_rx_restart_error_count++;
-            }
-        }
-        else
-        {
-            /*
-             * Байт міг бути пошкоджений.
-             * Повторний RX запустить ErrorCallback.
-             */
-            uart_rx_discarded_error_byte_count++;
-        }
+        return;
     }
+
+    uint16_t new_position =
+        size &
+        (UART_DMA_RX_BUFFER_SIZE - 1U);
+
+    uint16_t received =
+        (new_position - uart_dma_old_position) &
+        (UART_DMA_RX_BUFFER_SIZE - 1U);
+
+    uart_dma_produced += received;
+    uart_rx_count += received;
+
+    uart_dma_old_position = new_position;
 }
 
 static ButtonEvent button_debounce_poll(void)
