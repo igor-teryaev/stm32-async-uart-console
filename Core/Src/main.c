@@ -127,13 +127,14 @@ void SystemClock_Config(void);
 /* USER CODE BEGIN PFP */
 static void uart_rx_recovery_poll(void);
 static ButtonEvent button_debounce_poll(void);
-static size_t uart_rx_peek_contiguous(const uint8_t **data);
+static size_t uart_rx_peek_contiguous(const uint8_t **data, bool *data_lost);
 static void uart_rx_consume(size_t length);
 static bool uart_tx_write(const uint8_t *data, size_t length);
 void HAL_UART_ErrorCallback(UART_HandleTypeDef *huart);
 void HAL_UARTEx_RxEventCallback(UART_HandleTypeDef *huart, uint16_t size);
 //для передачі строки/команди через UART
 static bool command_feed_byte(uint8_t byte);
+static void command_discard_until_eol(void);
 static void command_process(void);
 /* USER CODE END PFP */
 
@@ -240,22 +241,33 @@ int main(void)
 	  }
 	  else
 	  {
-		const uint8_t *received_data;
-		size_t received_length = uart_rx_peek_contiguous(&received_data);
+		  const uint8_t *received_data;
+		  bool data_lost;
 
-		if (received_length > 0U)
-		{
-			for (size_t i = 0U; i < received_length; i++)
-			{
-				if (command_feed_byte(received_data[i]))
-				{
-					command_count++;
-					command_process();
-				}
-			}
+		  size_t received_length =
+		      uart_rx_peek_contiguous(
+		          &received_data,
+		          &data_lost
+		      );
 
-			uart_rx_consume(received_length);
-		}
+		  if (data_lost)
+		  {
+		      command_discard_until_eol();
+		  }
+
+		  if (received_length > 0U)
+		  {
+		      for (size_t i = 0U; i < received_length; i++)
+		      {
+		          if (command_feed_byte(received_data[i]))
+		          {
+		              command_count++;
+		              command_process();
+		          }
+		      }
+
+		      uart_rx_consume(received_length);
+		  }
 	  }
   }
   /* USER CODE END 3 */
@@ -396,6 +408,12 @@ static bool command_feed_byte(uint8_t byte)
     command_length++;
 
     return false;
+}
+
+static void command_discard_until_eol(void)
+{
+    command_length = 0U;
+    command_discarding = true;
 }
 
 //обробка отриманих з UART команд
@@ -607,14 +625,15 @@ void HAL_UART_TxCpltCallback(UART_HandleTypeDef *huart)
     }
 }
 
-static size_t uart_rx_peek_contiguous(const uint8_t **data)
+static size_t uart_rx_peek_contiguous(const uint8_t **data, bool *data_lost)
 {
-    if (data == NULL)
+    if ((data == NULL) || (data_lost == NULL))
     {
         return 0U;
     }
 
     *data = NULL;
+    *data_lost = false;
 
     uint32_t produced_snapshot = uart_dma_produced;
     uint32_t pending =
@@ -631,6 +650,7 @@ static size_t uart_rx_peek_contiguous(const uint8_t **data)
             pending - UART_DMA_RX_BUFFER_SIZE;
 
         uart_rx_overflow_count += lost;
+        *data_lost = true;
         uart_dma_consumed =
             produced_snapshot - UART_DMA_RX_BUFFER_SIZE;
 
