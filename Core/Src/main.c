@@ -18,6 +18,7 @@
 /* USER CODE END Header */
 /* Includes ------------------------------------------------------------------*/
 #include "main.h"
+#include "dma.h"
 #include "usart.h"
 #include "gpio.h"
 
@@ -160,6 +161,7 @@ int main(void)
 
   /* Initialize all configured peripherals */
   MX_GPIO_Init();
+  MX_DMA_Init();
   MX_USART2_UART_Init();
   /* USER CODE BEGIN 2 */
 
@@ -711,50 +713,3 @@ void assert_failed(uint8_t *file, uint32_t line)
   /* USER CODE END 6 */
 }
 #endif /* USE_FULL_ASSERT */
-
-
-//постановка байту в TX-чергу
-/*static bool uart_tx_enqueue(uint8_t byte)
-{
-    uint32_t primask = __get_PRIMASK();
-    __disable_irq();
-
-    uint8_t next_head =
-        (uart_tx_head + 1U) & (UART_TX_BUFFER_SIZE - 1U);
-
-    if (next_head == uart_tx_tail)
-    {
-        uart_tx_overflow_count++;
-        __set_PRIMASK(primask);
-        return false;
-    }
-
-    uint8_t old_head = uart_tx_head;
-
-    uart_tx_buffer[uart_tx_head] = byte;
-    uart_tx_head = next_head;
-
-    if (!uart_tx_active)
-    {
-        uart_tx_active = true;
-
-        HAL_StatusTypeDef status = HAL_UART_Transmit_IT(
-            &huart2,
-            &uart_tx_buffer[uart_tx_tail],
-            1U
-        );
-
-        if (status != HAL_OK)
-        {
-            uart_tx_active = false;
-            uart_tx_head = old_head;
-            uart_tx_error_count++;
-
-            __set_PRIMASK(primask);
-            return false;
-        }
-    }
-
-    __set_PRIMASK(primask);
-    return true;
-}*/
