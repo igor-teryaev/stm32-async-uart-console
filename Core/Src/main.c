@@ -47,6 +47,8 @@ typedef enum {
 #define BUTTON_DEBOUNCE_MS 30U
 #define UART_DMA_RX_BUFFER_SIZE 256U
 #define UART_TX_BUFFER_SIZE 128U
+#define COMMAND_BUFFER_SIZE 32U
+#define STATUS_RESPONSE_SIZE 96U
 
 _Static_assert(
     UART_DMA_RX_BUFFER_SIZE > 1U &&
@@ -65,8 +67,7 @@ _Static_assert(
 /* Private variables ---------------------------------------------------------*/
 
 /* USER CODE BEGIN PV */
-#define COMMAND_BUFFER_SIZE 32U
-#define STATUS_RESPONSE_SIZE 96U
+
 
 static volatile uint32_t raw_edge_count = 0;
 static volatile uint32_t last_edge_time = 0;
@@ -101,7 +102,7 @@ static volatile uint32_t uart_rx_last_error = HAL_UART_ERROR_NONE;
 static volatile uint32_t uart_rx_restart_error_count = 0;
 static volatile uint32_t uart_rx_overflow_count = 0;
 
-static volatile uint32_t uart_rx_discarded_error_byte_count = 0;
+static volatile bool uart_rx_recovery_requested = false;
 
 //передача строки/команди через UART
 
@@ -117,16 +118,14 @@ static const uint8_t response_unknown[] = "ERROR: UNKNOWN COMMAND\r\n";
 
 static const uint8_t *pending_response = NULL;
 static size_t pending_response_length = 0;
-
-
-
 static uint8_t response_status[STATUS_RESPONSE_SIZE];
+
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
 void SystemClock_Config(void);
 /* USER CODE BEGIN PFP */
-
+static void uart_rx_recovery_poll(void);
 static ButtonEvent button_debounce_poll(void);
 static bool uart_rx_pop(uint8_t *byte);
 static bool uart_tx_write(const uint8_t *data, size_t length);
@@ -199,6 +198,11 @@ int main(void)
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
+	  if (uart_rx_recovery_requested)
+	  {
+	      uart_rx_recovery_poll();
+	      continue;
+	  }
 
 	  ButtonEvent button_event = button_debounce_poll();
 
@@ -298,6 +302,51 @@ void SystemClock_Config(void)
 }
 
 /* USER CODE BEGIN 4 */
+//коректне відновлення DMA після UART error
+static void uart_rx_recovery_poll(void)
+{
+    uint32_t primask = __get_PRIMASK();
+    __disable_irq();
+
+    if (!uart_rx_recovery_requested)
+    {
+        __set_PRIMASK(primask);
+        return;
+    }
+
+    uint32_t produced_snapshot =
+        uart_dma_produced;
+
+    uint32_t pending =
+        produced_snapshot - uart_dma_consumed;
+
+    uart_rx_overflow_count += pending;
+
+    uint32_t aligned =
+        (produced_snapshot +
+            UART_DMA_RX_BUFFER_SIZE - 1U) &
+        ~(UART_DMA_RX_BUFFER_SIZE - 1U);
+
+    uart_dma_produced = aligned;
+    uart_dma_consumed = aligned;
+    uart_dma_old_position = 0U;
+    command_length = 0U;
+    command_discarding = false;
+
+    uart_rx_recovery_requested = false;
+
+    __set_PRIMASK(primask);
+
+    if (HAL_UARTEx_ReceiveToIdle_DMA(
+            &huart2,
+            uart_dma_rx_buffer,
+            UART_DMA_RX_BUFFER_SIZE
+        ) != HAL_OK)
+    {
+        uart_rx_restart_error_count++;
+        uart_rx_recovery_requested = true;
+    }
+}
 
 //формування команд із потоку байтів, текстовий парсер
 static bool command_feed_byte(uint8_t byte)
@@ -443,6 +492,7 @@ void HAL_UART_ErrorCallback(
     {
         uart_rx_last_error = huart->ErrorCode;
         uart_rx_error_count++;
+        uart_rx_recovery_requested = true;
     }
 }
 
