@@ -28,6 +28,7 @@
 #include <string.h>
 #include <stdio.h>
 #include <inttypes.h>
+#include "command_parser.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -47,7 +48,6 @@ typedef enum {
 #define BUTTON_DEBOUNCE_MS 30U
 #define UART_DMA_RX_BUFFER_SIZE 256U
 #define UART_TX_BUFFER_SIZE 128U
-#define COMMAND_BUFFER_SIZE 32U
 #define STATUS_RESPONSE_SIZE 160U
 
 _Static_assert(
@@ -105,13 +105,8 @@ static volatile uint32_t uart_rx_overflow_count = 0;
 static volatile bool uart_rx_recovery_requested = false;
 
 //передача строки/команди через UART
-
-static char command_buffer[COMMAND_BUFFER_SIZE];
-static size_t command_length = 0;
-static bool command_discarding = false;
-
+static CommandParser command_parser;
 static volatile uint32_t command_count = 0;
-static volatile uint32_t command_overflow_count = 0;
 
 static const uint8_t response_ok[] = "OK\r\n";
 static const uint8_t response_unknown[] = "ERROR: UNKNOWN COMMAND\r\n";
@@ -133,9 +128,7 @@ static bool uart_tx_write(const uint8_t *data, size_t length);
 void HAL_UART_ErrorCallback(UART_HandleTypeDef *huart);
 void HAL_UARTEx_RxEventCallback(UART_HandleTypeDef *huart, uint16_t size);
 //для передачі строки/команди через UART
-static bool command_feed_byte(uint8_t byte);
-static void command_discard_until_eol(void);
-static void command_process(void);
+static void command_process(const char *command);
 /* USER CODE END PFP */
 
 /* Private user code ---------------------------------------------------------*/
@@ -175,6 +168,8 @@ int main(void)
   MX_DMA_Init();
   MX_USART2_UART_Init();
   /* USER CODE BEGIN 2 */
+
+  command_parser_init(&command_parser);
 
   if (HAL_UARTEx_ReceiveToIdle_DMA(
           &huart2,
@@ -252,22 +247,27 @@ int main(void)
 
 		  if (data_lost)
 		  {
-		      command_discard_until_eol();
+		      command_parser_discard_until_eol(
+		          &command_parser
+		      );
 		  }
 
-		  if (received_length > 0U)
+		  for (size_t i = 0U; i < received_length; i++)
 		  {
-		      for (size_t i = 0U; i < received_length; i++)
-		      {
-		          if (command_feed_byte(received_data[i]))
-		          {
-		              command_count++;
-		              command_process();
-		          }
-		      }
+		      const char *command;
 
-		      uart_rx_consume(received_length);
+		      if (command_parser_feed_byte(
+		              &command_parser,
+		              received_data[i],
+		              &command
+		          ))
+		      {
+		          command_count++;
+		          command_process(command);
+		      }
 		  }
+
+		  uart_rx_consume(received_length);
 	  }
   }
   /* USER CODE END 3 */
@@ -349,8 +349,7 @@ static void uart_rx_recovery_poll(void)
     uart_dma_produced = aligned;
     uart_dma_consumed = aligned;
     uart_dma_old_position = 0U;
-    command_length = 0U;
-    command_discarding = false;
+    command_parser_reset(&command_parser);
 
     uart_rx_recovery_requested = false;
 
@@ -367,59 +366,15 @@ static void uart_rx_recovery_poll(void)
     }
 }
 
-//формування команд із потоку байтів, текстовий парсер
-static bool command_feed_byte(uint8_t byte)
-{
-    if ((byte == '\r') || (byte == '\n'))
-    {
-        if (command_discarding)
-        {
-            command_discarding = false;
-            command_length = 0;
-            return false;
-        }
-
-        if (command_length == 0U)
-        {
-            return false;
-        }
-
-        command_buffer[command_length] = '\0';
-        command_length = 0;
-
-        return true;
-    }
-
-    if (command_discarding)
-    {
-        return false;
-    }
-
-    if (command_length >= (COMMAND_BUFFER_SIZE - 1U))
-    {
-        command_overflow_count++;
-        command_length = 0;
-        command_discarding = true;
-
-        return false;
-    }
-
-    command_buffer[command_length] = (char)byte;
-    command_length++;
-
-    return false;
-}
-
-static void command_discard_until_eol(void)
-{
-    command_length = 0U;
-    command_discarding = true;
-}
-
 //обробка отриманих з UART команд
-static void command_process(void)
+static void command_process(const char *command)
 {
-    if (strcmp(command_buffer, "LED ON") == 0)
+	if (command == NULL)
+	{
+	    return;
+	}
+
+    if (strcmp(command, "LED ON") == 0)
     {
         HAL_GPIO_WritePin(
             USER_LED_GPIO_Port,
@@ -430,7 +385,7 @@ static void command_process(void)
         pending_response = response_ok;
         pending_response_length = sizeof(response_ok) - 1U;
     }
-    else if (strcmp(command_buffer, "LED OFF") == 0)
+    else if (strcmp(command, "LED OFF") == 0)
     {
         HAL_GPIO_WritePin(
             USER_LED_GPIO_Port,
@@ -441,7 +396,7 @@ static void command_process(void)
         pending_response = response_ok;
         pending_response_length = sizeof(response_ok) - 1U;
     }
-    else if (strcmp(command_buffer, "LED TOGGLE") == 0)
+    else if (strcmp(command, "LED TOGGLE") == 0)
     {
         HAL_GPIO_TogglePin(
             USER_LED_GPIO_Port,
@@ -451,7 +406,7 @@ static void command_process(void)
         pending_response = response_ok;
         pending_response_length = sizeof(response_ok) - 1U;
     }
-    else if (strcmp(command_buffer, "STATUS") == 0)
+    else if (strcmp(command, "STATUS") == 0)
     {
 		uint32_t rx_count_snapshot;
 		uint32_t rx_overflow_snapshot;
@@ -468,9 +423,13 @@ static void command_process(void)
 			uart_error_snapshot = uart_rx_error_count;
 			uart_restart_error_snapshot = uart_rx_restart_error_count;
 			uart_last_error_snapshot = uart_rx_last_error;
-			command_overflow_snapshot = command_overflow_count;
 
     	__set_PRIMASK(primask);
+
+			command_overflow_snapshot =
+					command_parser_get_overflow_count(
+							&command_parser
+			);
 
 		int length = snprintf(
 			(char *)response_status,
