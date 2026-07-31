@@ -127,7 +127,8 @@ void SystemClock_Config(void);
 /* USER CODE BEGIN PFP */
 static void uart_rx_recovery_poll(void);
 static ButtonEvent button_debounce_poll(void);
-static bool uart_rx_pop(uint8_t *byte);
+static size_t uart_rx_peek_contiguous(const uint8_t **data);
+static void uart_rx_consume(size_t length);
 static bool uart_tx_write(const uint8_t *data, size_t length);
 void HAL_UART_ErrorCallback(UART_HandleTypeDef *huart);
 void HAL_UARTEx_RxEventCallback(UART_HandleTypeDef *huart, uint16_t size);
@@ -239,16 +240,22 @@ int main(void)
 	  }
 	  else
 	  {
-	      uint8_t received_byte;
+		const uint8_t *received_data;
+		size_t received_length = uart_rx_peek_contiguous(&received_data);
 
-	      if (uart_rx_pop(&received_byte))
-	      {
-	          if (command_feed_byte(received_byte))
-	          {
-	              command_count++;
-	              command_process();
-	          }
-	      }
+		if (received_length > 0U)
+		{
+			for (size_t i = 0U; i < received_length; i++)
+			{
+				if (command_feed_byte(received_data[i]))
+				{
+					command_count++;
+					command_process();
+				}
+			}
+
+			uart_rx_consume(received_length);
+		}
 	  }
   }
   /* USER CODE END 3 */
@@ -600,22 +607,22 @@ void HAL_UART_TxCpltCallback(UART_HandleTypeDef *huart)
     }
 }
 
-static bool uart_rx_pop(uint8_t *byte)
+static size_t uart_rx_peek_contiguous(const uint8_t **data)
 {
-    if (byte == NULL)
+    if (data == NULL)
     {
-        return false;
+        return 0U;
     }
 
-    uint32_t produced_snapshot =
-        uart_dma_produced;
+    *data = NULL;
 
+    uint32_t produced_snapshot = uart_dma_produced;
     uint32_t pending =
         produced_snapshot - uart_dma_consumed;
 
     if (pending == 0U)
     {
-        return false;
+        return 0U;
     }
 
     if (pending > UART_DMA_RX_BUFFER_SIZE)
@@ -624,20 +631,30 @@ static bool uart_rx_pop(uint8_t *byte)
             pending - UART_DMA_RX_BUFFER_SIZE;
 
         uart_rx_overflow_count += lost;
-
         uart_dma_consumed =
-            produced_snapshot -
-            UART_DMA_RX_BUFFER_SIZE;
+            produced_snapshot - UART_DMA_RX_BUFFER_SIZE;
+
+        pending = UART_DMA_RX_BUFFER_SIZE;
     }
 
     uint32_t index =
         uart_dma_consumed &
         (UART_DMA_RX_BUFFER_SIZE - 1U);
 
-    *byte = uart_dma_rx_buffer[index];
-    uart_dma_consumed++;
+    uint32_t until_end =
+        UART_DMA_RX_BUFFER_SIZE - index;
 
-    return true;
+    uint32_t contiguous_length =
+        (pending < until_end) ? pending : until_end;
+
+    *data = &uart_dma_rx_buffer[index];
+
+    return (size_t)contiguous_length;
+}
+
+static void uart_rx_consume(size_t length)
+{
+    uart_dma_consumed += (uint32_t)length;
 }
 
 void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin)
