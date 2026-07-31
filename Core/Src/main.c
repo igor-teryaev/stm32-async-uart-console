@@ -48,7 +48,7 @@ typedef enum {
 #define UART_DMA_RX_BUFFER_SIZE 256U
 #define UART_TX_BUFFER_SIZE 128U
 #define COMMAND_BUFFER_SIZE 32U
-#define STATUS_RESPONSE_SIZE 96U
+#define STATUS_RESPONSE_SIZE 160U
 
 _Static_assert(
     UART_DMA_RX_BUFFER_SIZE > 1U &&
@@ -428,34 +428,42 @@ static void command_process(void)
     }
     else if (strcmp(command_buffer, "STATUS") == 0)
     {
-    	uint32_t rx_count_snapshot;
-    	uint32_t rx_overflow_snapshot;
-    	uint32_t uart_error_snapshot;
-    	uint32_t command_overflow_snapshot;
+		uint32_t rx_count_snapshot;
+		uint32_t rx_overflow_snapshot;
+		uint32_t uart_error_snapshot;
+		uint32_t uart_restart_error_snapshot;
+		uint32_t uart_last_error_snapshot;
+		uint32_t command_overflow_snapshot;
 
-    	uint32_t primask = __get_PRIMASK();
+		uint32_t primask = __get_PRIMASK();
     	__disable_irq();
 
 			rx_count_snapshot = uart_rx_count;
 			rx_overflow_snapshot = uart_rx_overflow_count;
 			uart_error_snapshot = uart_rx_error_count;
+			uart_restart_error_snapshot = uart_rx_restart_error_count;
+			uart_last_error_snapshot = uart_rx_last_error;
 			command_overflow_snapshot = command_overflow_count;
 
     	__set_PRIMASK(primask);
 
-    	int length = snprintf(
-    	    (char *)response_status,
-    	    sizeof(response_status),
-    	    "RX=%" PRIu32
-    	    " RX_OVF=%" PRIu32
-    	    " UART_ERR=%" PRIu32
-    	    " CMD_OVF=%" PRIu32
-    	    "\r\n",
-    	    rx_count_snapshot,
-    	    rx_overflow_snapshot,
-    	    uart_error_snapshot,
-    	    command_overflow_snapshot
-    	);
+		int length = snprintf(
+			(char *)response_status,
+			sizeof(response_status),
+			"RX=%" PRIu32
+			" RX_OVF=%" PRIu32
+			" UART_ERR=%" PRIu32
+			" UART_RESTART_ERR=%" PRIu32
+			" UART_LAST=0x%08" PRIX32
+			" CMD_OVF=%" PRIu32
+			"\r\n",
+			rx_count_snapshot,
+			rx_overflow_snapshot,
+			uart_error_snapshot,
+			uart_restart_error_snapshot,
+			uart_last_error_snapshot,
+			command_overflow_snapshot
+		);
 
         if (length < 0)
         {
