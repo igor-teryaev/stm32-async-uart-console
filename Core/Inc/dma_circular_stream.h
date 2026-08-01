@@ -38,4 +38,18 @@ uint32_t dma_circular_stream_get_produced(
     const DmaCircularStream *stream
 );
 
+size_t dma_circular_stream_peek(
+    DmaCircularStream *stream,
+    const uint8_t **data,
+    bool *data_lost
+);
+
+bool dma_circular_stream_consume(
+    DmaCircularStream *stream,
+    size_t length
+);
+
+uint32_t dma_circular_stream_get_overflow_count(
+    const DmaCircularStream *stream
+);
 #endif
