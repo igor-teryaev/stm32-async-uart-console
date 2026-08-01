@@ -163,3 +163,30 @@ uint32_t dma_circular_stream_get_overflow_count(
 
     return stream->overflow_count;
 }
+
+uint32_t dma_circular_stream_reset_for_restart(
+    DmaCircularStream *stream
+)
+{
+    if ((stream == NULL) ||
+        (stream->capacity <= 1U))
+    {
+        return 0U;
+    }
+
+    uint32_t produced_snapshot = stream->produced;
+    uint32_t pending =
+        produced_snapshot - stream->consumed;
+
+    stream->overflow_count += pending;
+
+    uint32_t aligned =
+        (produced_snapshot + stream->mask) &
+        ~stream->mask;
+
+    stream->produced = aligned;
+    stream->consumed = aligned;
+    stream->old_position = 0U;
+
+    return pending;
+}

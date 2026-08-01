@@ -52,4 +52,9 @@ bool dma_circular_stream_consume(
 uint32_t dma_circular_stream_get_overflow_count(
     const DmaCircularStream *stream
 );
+
+uint32_t dma_circular_stream_reset_for_restart(
+    DmaCircularStream *stream
+);
+
 #endif

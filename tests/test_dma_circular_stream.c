@@ -301,6 +301,65 @@ static void test_overflow_keeps_newest_buffer(void)
         &stream, 89U));
 }
 
+static void test_reset_for_dma_restart(void)
+{
+    DmaCircularStream stream;
+    uint8_t buffer[TEST_CAPACITY];
+    const uint8_t *data = NULL;
+    bool data_lost = false;
+
+    assert(dma_circular_stream_init(
+        &stream, buffer, TEST_CAPACITY));
+
+    assert(
+        dma_circular_stream_publish_position(
+            &stream, 100U
+        ) == 100U
+    );
+
+    assert(dma_circular_stream_consume(
+        &stream, 40U));
+
+    /* 60 unread bytes are discarded during restart. */
+    assert(
+        dma_circular_stream_reset_for_restart(
+            &stream
+        ) == 60U
+    );
+
+    assert(
+        dma_circular_stream_get_produced(&stream) ==
+        256U
+    );
+
+    assert(
+        dma_circular_stream_get_overflow_count(
+            &stream
+        ) == 60U
+    );
+
+    /* Restarted DMA begins again at physical position zero. */
+    assert(
+        dma_circular_stream_publish_position(
+            &stream, 20U
+        ) == 20U
+    );
+
+    assert(
+        dma_circular_stream_get_produced(&stream) ==
+        276U
+    );
+
+    assert(
+        dma_circular_stream_peek(
+            &stream, &data, &data_lost
+        ) == 20U
+    );
+
+    assert(!data_lost);
+    assert(data == &buffer[0]);
+}
+
 int main(void)
 {
     test_initialization();
@@ -311,6 +370,7 @@ int main(void)
     test_contiguous_blocks_across_wrap();
     test_consume_rejects_excess_length();
     test_overflow_keeps_newest_buffer();
+    test_reset_for_dma_restart();
 
     puts("All DMA circular stream tests passed.");
     return 0;
