@@ -14,3 +14,4 @@
 *.launch
 /.settings/language.settings.xml
 /.settings/com.st.stm32cube.ide.mcu.sfrview.prefs
+/tests/bin/
