@@ -45,6 +45,8 @@ The project demonstrates a bare-metal producer-consumer architecture without an 
 - Deferred UART/DMA recovery outside interrupt context
 - Interrupt-driven TX ring buffer
 - Line-oriented command parser
+- Reusable command-parser module with explicit per-instance state
+- Host-side parser tests compiled with native GCC
 - Overlength-command detection and recovery
 - Asynchronous command responses
 - EXTI handling for both button edges
@@ -211,7 +213,30 @@ A deliberately blocked consumer produced the expected overflow count:
 ```text
 601 received bytes - 256 retained bytes = 345 lost bytes
 ```
+## Host-side tests
 
+The command parser is independent of STM32 HAL and can be compiled and tested on a development computer.
+
+The test suite covers:
+
+- normal command completion;
+- empty line handling;
+- literal backslash sequences;
+- maximum-length commands;
+- overlength-command discard and recovery;
+- runtime reset with diagnostic preservation;
+- resynchronization after transport data loss;
+- independent parser instances.
+
+Example GCC build:
+
+```text
+gcc -std=c11 -Wall -Wextra -Werror -pedantic \
+    -ICore/Inc \
+    Core/Src/command_parser.c \
+    tests/test_command_parser.c \
+    -o command_parser_tests
+```
 ## Project structure
 
 ```text
@@ -219,6 +244,8 @@ Core/
 |-- Inc/                         Application and generated headers
 |-- Src/                         Application and generated sources
 `-- Startup/                     STM32F446RE startup code
+tests/
+`-- test_command_parser.c        Host-side command-parser tests
 Drivers/
 |-- CMSIS/                       ARM and STM32 device headers
 `-- STM32F4xx_HAL_Driver/        STM32 HAL drivers
@@ -227,7 +254,9 @@ STM32F446RETX_FLASH.ld           Flash linker script
 STM32F446RETX_RAM.ld             RAM linker script
 ```
 
-The current application logic, DMA stream accounting, TX ring buffer, command parser, debounce state machine, and HAL callbacks are located in `Core/Src/main.c`.
+DMA stream accounting, the TX ring buffer, debounce state machine, application orchestration, and HAL callbacks currently remain in `Core/Src/main.c`.
+
+The reusable command parser is implemented in `Core/Src/command_parser.c` with its public API in `Core/Inc/command_parser.h`.
 
 ## Build and run
 
@@ -243,22 +272,21 @@ The current application logic, DMA stream accounting, TX ring buffer, command pa
 Peripheral configuration changes should be made in standalone STM32CubeMX using `nucleo_f446re_lab01.ioc`, followed by code generation and rebuilding in STM32CubeIDE.
 
 ## Current limitations
-
-- RX transport, TX transport, parser, and application logic remain in `main.c`.
+- RX transport, TX transport, and application orchestration remain in `main.c`.
 - TX is interrupt-driven one byte at a time rather than DMA-based.
-- No automated host-side unit tests are included.
+- Host-side tests currently cover the command parser only.
 - The command protocol has no framing, checksum, sequence number, or authentication.
 - The project does not use an RTOS.
 
 ## Planned improvements
 
 - Extract reusable UART RX and TX modules
-- Separate the command parser from GPIO application logic
-- Add host-side unit tests for stream accounting and parser recovery
 - Add DMA-based UART transmission
 - Introduce a framed protocol with integrity checking
 - Add telemetry-oriented message handling
 - Evaluate FreeRTOS integration when concurrent tasks require it
+- Add host-side tests for DMA stream-accounting logic
+- Run host-side tests automatically in continuous integration
 
 ## Author
 
