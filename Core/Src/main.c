@@ -29,6 +29,7 @@
 #include <stdio.h>
 #include <inttypes.h>
 #include "command_parser.h"
+#include "dma_circular_stream.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -80,13 +81,7 @@ static uint32_t pending_button_messages = 0;
 
 //кільцевий буфер для прийома
 static uint8_t uart_dma_rx_buffer[UART_DMA_RX_BUFFER_SIZE];
-
-static volatile uint32_t uart_dma_produced = 0U;
-static uint32_t uart_dma_consumed = 0U;
-
-static uint16_t uart_dma_old_position = 0U;
-
-
+static DmaCircularStream uart_rx_stream;
 
 //кільцевий буфер для передачі
 static uint8_t uart_tx_buffer[UART_TX_BUFFER_SIZE];
@@ -100,7 +95,6 @@ static volatile uint32_t uart_tx_error_count = 0;
 static volatile uint32_t uart_rx_error_count = 0;
 static volatile uint32_t uart_rx_last_error = HAL_UART_ERROR_NONE;
 static volatile uint32_t uart_rx_restart_error_count = 0;
-static volatile uint32_t uart_rx_overflow_count = 0;
 
 static volatile bool uart_rx_recovery_requested = false;
 
@@ -122,8 +116,6 @@ void SystemClock_Config(void);
 /* USER CODE BEGIN PFP */
 static void uart_rx_recovery_poll(void);
 static ButtonEvent button_debounce_poll(void);
-static size_t uart_rx_peek_contiguous(const uint8_t **data, bool *data_lost);
-static void uart_rx_consume(size_t length);
 static bool uart_tx_write(const uint8_t *data, size_t length);
 void HAL_UART_ErrorCallback(UART_HandleTypeDef *huart);
 void HAL_UARTEx_RxEventCallback(UART_HandleTypeDef *huart, uint16_t size);
@@ -170,6 +162,15 @@ int main(void)
   /* USER CODE BEGIN 2 */
 
   command_parser_init(&command_parser);
+
+  if (!dma_circular_stream_init(
+          &uart_rx_stream,
+          uart_dma_rx_buffer,
+          UART_DMA_RX_BUFFER_SIZE
+      ))
+  {
+      Error_Handler();
+  }
 
   if (HAL_UARTEx_ReceiveToIdle_DMA(
           &huart2,
@@ -240,10 +241,11 @@ int main(void)
 		  bool data_lost;
 
 		  size_t received_length =
-		      uart_rx_peek_contiguous(
-		          &received_data,
-		          &data_lost
-		      );
+				  dma_circular_stream_peek(
+				      &uart_rx_stream,
+				      &received_data,
+				      &data_lost
+				  );
 
 		  if (data_lost)
 		  {
@@ -267,7 +269,13 @@ int main(void)
 		      }
 		  }
 
-		  uart_rx_consume(received_length);
+		  if (!dma_circular_stream_consume(
+		          &uart_rx_stream,
+		          received_length
+		      ))
+		  {
+		      Error_Handler();
+		  }
 	  }
   }
   /* USER CODE END 3 */
@@ -333,22 +341,10 @@ static void uart_rx_recovery_poll(void)
         return;
     }
 
-    uint32_t produced_snapshot =
-        uart_dma_produced;
+    dma_circular_stream_reset_for_restart(
+        &uart_rx_stream
+    );
 
-    uint32_t pending =
-        produced_snapshot - uart_dma_consumed;
-
-    uart_rx_overflow_count += pending;
-
-    uint32_t aligned =
-        (produced_snapshot +
-            UART_DMA_RX_BUFFER_SIZE - 1U) &
-        ~(UART_DMA_RX_BUFFER_SIZE - 1U);
-
-    uart_dma_produced = aligned;
-    uart_dma_consumed = aligned;
-    uart_dma_old_position = 0U;
     command_parser_reset(&command_parser);
 
     uart_rx_recovery_requested = false;
@@ -419,12 +415,16 @@ static void command_process(const char *command)
     	__disable_irq();
 
 			rx_count_snapshot = uart_rx_count;
-			rx_overflow_snapshot = uart_rx_overflow_count;
 			uart_error_snapshot = uart_rx_error_count;
 			uart_restart_error_snapshot = uart_rx_restart_error_count;
 			uart_last_error_snapshot = uart_rx_last_error;
 
     	__set_PRIMASK(primask);
+
+			rx_overflow_snapshot =
+					dma_circular_stream_get_overflow_count(
+							&uart_rx_stream
+			);
 
 			command_overflow_snapshot =
 					command_parser_get_overflow_count(
@@ -584,58 +584,6 @@ void HAL_UART_TxCpltCallback(UART_HandleTypeDef *huart)
     }
 }
 
-static size_t uart_rx_peek_contiguous(const uint8_t **data, bool *data_lost)
-{
-    if ((data == NULL) || (data_lost == NULL))
-    {
-        return 0U;
-    }
-
-    *data = NULL;
-    *data_lost = false;
-
-    uint32_t produced_snapshot = uart_dma_produced;
-    uint32_t pending =
-        produced_snapshot - uart_dma_consumed;
-
-    if (pending == 0U)
-    {
-        return 0U;
-    }
-
-    if (pending > UART_DMA_RX_BUFFER_SIZE)
-    {
-        uint32_t lost =
-            pending - UART_DMA_RX_BUFFER_SIZE;
-
-        uart_rx_overflow_count += lost;
-        *data_lost = true;
-        uart_dma_consumed =
-            produced_snapshot - UART_DMA_RX_BUFFER_SIZE;
-
-        pending = UART_DMA_RX_BUFFER_SIZE;
-    }
-
-    uint32_t index =
-        uart_dma_consumed &
-        (UART_DMA_RX_BUFFER_SIZE - 1U);
-
-    uint32_t until_end =
-        UART_DMA_RX_BUFFER_SIZE - index;
-
-    uint32_t contiguous_length =
-        (pending < until_end) ? pending : until_end;
-
-    *data = &uart_dma_rx_buffer[index];
-
-    return (size_t)contiguous_length;
-}
-
-static void uart_rx_consume(size_t length)
-{
-    uart_dma_consumed += (uint32_t)length;
-}
-
 void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin)
 {
     if (GPIO_Pin == USER_BUTTON_Pin) {
@@ -655,18 +603,15 @@ void HAL_UARTEx_RxEventCallback(
         return;
     }
 
-    uint16_t new_position =
-        size &
-        (UART_DMA_RX_BUFFER_SIZE - 1U);
 
-    uint16_t received =
-        (new_position - uart_dma_old_position) &
-        (UART_DMA_RX_BUFFER_SIZE - 1U);
+    uint32_t received =
+        dma_circular_stream_publish_position(
+            &uart_rx_stream,
+            size
+        );
 
-    uart_dma_produced += received;
     uart_rx_count += received;
 
-    uart_dma_old_position = new_position;
 }
 
 static ButtonEvent button_debounce_poll(void)
