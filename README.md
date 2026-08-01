@@ -46,13 +46,14 @@ The project demonstrates a bare-metal producer-consumer architecture without an 
 - Interrupt-driven TX ring buffer
 - Line-oriented command parser
 - Reusable command-parser module with explicit per-instance state
-- Host-side parser tests compiled with native GCC
+- Host-side tests for command parsing and DMA stream accounting
 - Overlength-command detection and recovery
 - Asynchronous command responses
 - EXTI handling for both button edges
 - Non-blocking software debounce
 - Runtime diagnostic counters through the UART console
 - Compile-time validation of the DMA buffer size
+- Reusable HAL-independent circular DMA stream module
 
 ## Supported commands
 
@@ -215,9 +216,11 @@ A deliberately blocked consumer produced the expected overflow count:
 ```
 ## Host-side tests
 
-The command parser is independent of STM32 HAL and can be compiled and tested on a development computer.
+The command parser and circular DMA stream modules are independent of STM32 HAL and can be compiled and tested on a development computer.
 
 The test suite covers:
+
+### Command parser
 
 - normal command completion;
 - empty line handling;
@@ -237,6 +240,29 @@ gcc -std=c11 -Wall -Wextra -Werror -pedantic \
     tests/test_command_parser.c \
     -o command_parser_tests
 ```
+
+### Circular DMA stream
+
+The DMA stream test suite covers:
+
+- configuration validation and power-of-two capacities;
+- HT, TC, and IDLE position accounting;
+- physical position wrap-around;
+- zero-copy contiguous block access;
+- guarded consumption;
+- exact overflow accounting;
+- DMA restart alignment and recovery.
+
+Example GCC build:
+
+```text
+gcc -std=c11 -Wall -Wextra -Werror -pedantic \
+    -ICore/Inc \
+    Core/Src/dma_circular_stream.c \
+    tests/test_dma_circular_stream.c \
+    -o dma_circular_stream_tests
+```
+
 ## Project structure
 
 ```text
@@ -246,6 +272,7 @@ Core/
 `-- Startup/                     STM32F446RE startup code
 tests/
 `-- test_command_parser.c        Host-side command-parser tests
+`-- test_dma_circular_stream.c   Host-side DMA-stream tests
 Drivers/
 |-- CMSIS/                       ARM and STM32 device headers
 `-- STM32F4xx_HAL_Driver/        STM32 HAL drivers
@@ -254,9 +281,11 @@ STM32F446RETX_FLASH.ld           Flash linker script
 STM32F446RETX_RAM.ld             RAM linker script
 ```
 
-DMA stream accounting, the TX ring buffer, debounce state machine, application orchestration, and HAL callbacks currently remain in `Core/Src/main.c`.
+The UART HAL adapter, TX ring buffer, debounce state machine, application orchestration, and HAL callbacks currently remain in `Core/Src/main.c`.
 
-The reusable command parser is implemented in `Core/Src/command_parser.c` with its public API in `Core/Inc/command_parser.h`.
+The reusable command parser is implemented in `Core/Src/command_parser.c`.
+
+HAL-independent circular DMA position accounting, zero-copy block access, overflow detection, and restart alignment are implemented in `Core/Src/dma_circular_stream.c`.
 
 ## Build and run
 
@@ -272,20 +301,19 @@ The reusable command parser is implemented in `Core/Src/command_parser.c` with i
 Peripheral configuration changes should be made in standalone STM32CubeMX using `nucleo_f446re_lab01.ioc`, followed by code generation and rebuilding in STM32CubeIDE.
 
 ## Current limitations
-- RX transport, TX transport, and application orchestration remain in `main.c`.
 - TX is interrupt-driven one byte at a time rather than DMA-based.
-- Host-side tests currently cover the command parser only.
+- The UART HAL adapter, TX transport, debounce logic, and application orchestration remain in `main.c`.
+- Host-side tests do not yet cover the STM32 HAL adapter or TX transport.
 - The command protocol has no framing, checksum, sequence number, or authentication.
 - The project does not use an RTOS.
 
 ## Planned improvements
 
-- Extract reusable UART RX and TX modules
+- Extract the UART HAL adapter and TX ring buffer from `main.c`
 - Add DMA-based UART transmission
 - Introduce a framed protocol with integrity checking
 - Add telemetry-oriented message handling
 - Evaluate FreeRTOS integration when concurrent tasks require it
-- Add host-side tests for DMA stream-accounting logic
 - Run host-side tests automatically in continuous integration
 
 ## Author
