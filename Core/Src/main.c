@@ -30,7 +30,7 @@
 #include <inttypes.h>
 #include "command_parser.h"
 #include "dma_circular_stream.h"
-#include "spsc_byte_queue.h"
+#include "uart_tx_adapter.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -86,11 +86,7 @@ static DmaCircularStream uart_rx_stream;
 
 //кільцевий буфер для передачі
 static uint8_t uart_tx_buffer[UART_TX_BUFFER_SIZE];
-static SpscByteQueue uart_tx_queue;
-
-static volatile bool uart_tx_active = false;
-static volatile size_t uart_tx_active_length = 0U;
-static volatile uint32_t uart_tx_error_count = 0U;
+static UartTxAdapter uart_tx;
 
 //обробка ORE (помилка переповнення під час запису)
 static volatile uint32_t uart_rx_error_count = 0;
@@ -118,12 +114,6 @@ void SystemClock_Config(void);
 static bool pending_response_try_enqueue(void);
 static void uart_rx_recovery_poll(void);
 static ButtonEvent button_debounce_poll(void);
-static void uart_tx_poll(void);
-static void uart_tx_start_next(void);
-static bool uart_tx_write(
-    const uint8_t *data,
-    size_t length
-);
 void HAL_UART_ErrorCallback(UART_HandleTypeDef *huart);
 void HAL_UARTEx_RxEventCallback(UART_HandleTypeDef *huart, uint16_t size);
 //для передачі строки/команди через UART
@@ -170,8 +160,9 @@ int main(void)
 
   command_parser_init(&command_parser);
 
-  if (!spsc_byte_queue_init(
-          &uart_tx_queue,
+  if (!uart_tx_adapter_init(
+          &uart_tx,
+          &huart2,
           uart_tx_buffer,
           UART_TX_BUFFER_SIZE
       ))
@@ -212,7 +203,7 @@ int main(void)
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
-	  uart_tx_poll();
+	  uart_tx_adapter_poll(&uart_tx);
 
 	  if (uart_rx_recovery_requested)
 	  {
@@ -234,18 +225,20 @@ int main(void)
 
 	  if (pending_response != NULL)
 	  {
-	      if (uart_tx_write(
+	      if (uart_tx_adapter_write(
+	              &uart_tx,
 	              pending_response,
 	              pending_response_length
 	          ))
 	      {
 	          pending_response = NULL;
-	          pending_response_length = 0;
+	          pending_response_length = 0U;
 	      }
 	  }
 	  else if (pending_button_messages > 0U)
 	  {
-	      if (uart_tx_write(
+	      if (uart_tx_adapter_write(
+	              &uart_tx,
 	              button_message,
 	              sizeof(button_message) - 1U
 	          ))
@@ -400,7 +393,8 @@ static bool pending_response_try_enqueue(void)
         return true;
     }
 
-    if (!uart_tx_write(
+    if (!uart_tx_adapter_write(
+            &uart_tx,
             pending_response,
             pending_response_length
         ))
@@ -470,7 +464,8 @@ static void command_process(const char *command)
 			uart_error_snapshot = uart_rx_error_count;
 			uart_restart_error_snapshot = uart_rx_restart_error_count;
 			uart_last_error_snapshot = uart_rx_last_error;
-			uart_tx_error_snapshot = uart_tx_error_count;
+			uart_tx_error_snapshot =
+			    uart_tx_adapter_get_error_count(&uart_tx);
 
     	__set_PRIMASK(primask);
 
@@ -543,99 +538,15 @@ void HAL_UART_ErrorCallback(
     }
 }
 
-static void uart_tx_start_next(void)
-{
-    const uint8_t *data = NULL;
-    size_t length;
-    uint32_t primask = __get_PRIMASK();
-
-    __disable_irq();
-
-    if (uart_tx_active)
-    {
-        __set_PRIMASK(primask);
-        return;
-    }
-
-    length = spsc_byte_queue_peek(
-        &uart_tx_queue,
-        &data
-    );
-
-    if (length == 0U)
-    {
-        __set_PRIMASK(primask);
-        return;
-    }
-
-    uart_tx_active = true;
-    uart_tx_active_length = length;
-
-    if (HAL_UART_Transmit_IT(
-            &huart2,
-            (uint8_t *)data,
-            (uint16_t)length
-        ) != HAL_OK)
-    {
-        /*
-         * Дані залишаються у черзі.
-         * uart_tx_poll() спробує запустити їх знову.
-         */
-        uart_tx_active = false;
-        uart_tx_active_length = 0U;
-        uart_tx_error_count++;
-    }
-
-    __set_PRIMASK(primask);
-}
-
-static void uart_tx_poll(void)
-{
-    uart_tx_start_next();
-}
-
-static bool uart_tx_write(
-    const uint8_t *data,
-    size_t length
-)
-{
-    if (!spsc_byte_queue_write(
-            &uart_tx_queue,
-            data,
-            length
-        ))
-    {
-        return false;
-    }
-
-    uart_tx_start_next();
-    return true;
-}
-
 //TX Callback
 void HAL_UART_TxCpltCallback(
     UART_HandleTypeDef *huart
 )
 {
-    if (huart->Instance == USART2)
-    {
-        size_t completed_length =
-            uart_tx_active_length;
-
-        uart_tx_active_length = 0U;
-        uart_tx_active = false;
-
-        if (!spsc_byte_queue_consume(
-                &uart_tx_queue,
-                completed_length
-            ))
-        {
-            uart_tx_error_count++;
-            return;
-        }
-
-        uart_tx_start_next();
-    }
+    uart_tx_adapter_handle_tx_complete(
+        &uart_tx,
+        huart
+    );
 }
 
 void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin)
