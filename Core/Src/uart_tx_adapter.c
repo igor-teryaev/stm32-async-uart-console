@@ -37,7 +37,7 @@ static void uart_tx_adapter_start_next(
     adapter->active_length = length;
     adapter->active = true;
 
-    if (HAL_UART_Transmit_IT(
+    if (HAL_UART_Transmit_DMA(
             adapter->huart,
             (uint8_t *)data,
             (uint16_t)length
@@ -62,8 +62,9 @@ bool uart_tx_adapter_init(
     uint32_t capacity
 )
 {
-	/*queue може теоретично мати більшу місткість, але HAL_UART_Transmit_IT() приймає довжину як uint16_t.
-	 *	Адаптер не повинен мовчки обрізати її приведенням типу.
+	/*
+	 * HAL_UART_Transmit_DMA() accepts a uint16_t length.
+	 * Reject larger capacities instead of truncating them.
 	 */
     if ((adapter == NULL) ||
         (huart == NULL) ||
