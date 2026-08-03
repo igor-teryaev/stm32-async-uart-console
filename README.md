@@ -8,7 +8,7 @@ This project implements an asynchronous command console for the NUCLEO-F446RE de
 
 USART2 reception uses a 256-byte circular DMA buffer with half-transfer, transfer-complete, and IDLE-line events. The main loop processes received data directly from the DMA buffer in contiguous zero-copy blocks.
 
-Transmission uses a separate interrupt-driven ring buffer. Command parsing, hardware control, error recovery, and button debounce are performed outside interrupt context.
+Transmission uses a tested HAL-independent SPSC byte queue, while the STM32 HAL adapter sends contiguous blocks using interrupts. Command parsing, hardware control, error recovery, and button debounce are performed outside interrupt context.
 
 The project demonstrates a bare-metal producer-consumer architecture without an RTOS.
 
@@ -43,10 +43,12 @@ The project demonstrates a bare-metal producer-consumer architecture without an 
 - Detection and accounting of overwritten unread data
 - Parser resynchronization after RX data loss
 - Deferred UART/DMA recovery outside interrupt context
-- Interrupt-driven TX ring buffer
+- Tested HAL-independent SPSC TX byte queue
+- Interrupt-driven transmission of contiguous TX blocks
+- TX backpressure without command-response loss
 - Line-oriented command parser
 - Reusable command-parser module with explicit per-instance state
-- Host-side tests for command parsing and DMA stream accounting
+- Host-side tests for command parsing, DMA stream accounting, and the SPSC byte queue
 - Overlength-command detection and recovery
 - Asynchronous command responses
 - EXTI handling for both button edges
@@ -153,11 +155,15 @@ This keeps error callbacks short and avoids performing complex recovery inside a
 
 ### Transmit path
 
-Application responses are copied into a separate TX ring buffer.
+Application responses are copied into a HAL-independent single-producer/single-consumer byte queue.
 
-If transmission is idle, the first byte is started with `HAL_UART_Transmit_IT()`. Each transmit-complete callback advances the TX queue and starts the next byte until the buffer becomes empty.
+Queue writes use up to two `memcpy()` operations when data crosses the physical end of the circular buffer. The new absolute `head` value is published only after both copies complete, preventing the consumer from observing partially written data.
 
-Interrupts are briefly masked while application code publishes data to the TX queue, preventing the callback from observing partially updated queue state.
+When USART2 is idle, the HAL adapter obtains the largest contiguous block with `spsc_byte_queue_peek()` and starts the entire block using `HAL_UART_Transmit_IT()`. The adapter stores the active transfer length. The transmit-complete callback consumes exactly that number of bytes and immediately starts the next contiguous block.
+
+If HAL cannot start a transfer, accepted data remains queued and the main loop retries later.
+
+If a command response does not fit in the TX queue, the completed command is not executed again. Its response remains pending, RX consumption stops at the exact processed byte boundary, and parsing resumes after TX capacity becomes available.
 
 ### Command parser
 
@@ -216,7 +222,7 @@ A deliberately blocked consumer produced the expected overflow count:
 ```
 ## Host-side tests
 
-The command parser and circular DMA stream modules are independent of STM32 HAL and can be compiled and tested on a development computer.
+The command parser, circular DMA stream, and SPSC byte queue modules are independent of STM32 HAL and can be compiled and tested on a development computer.
 
 The test suite covers:
 
@@ -253,6 +259,26 @@ The DMA stream test suite covers:
 - exact overflow accounting;
 - DMA restart alignment and recovery.
 
+### SPSC byte queue
+
+The SPSC byte queue test suite covers:
+
+- configuration validation and power-of-two capacities;
+- use of the full configured capacity;
+- contiguous `peek()` and guarded `consume()`;
+- wrap-around writes split across two physical blocks;
+- rejection of writes that exceed available capacity;
+- preservation of queue state after failed operations.
+
+Example GCC build:
+
+```text
+gcc -std=c11 -Wall -Wextra -Werror -pedantic \
+    -ICore/Inc \
+    Core/Src/spsc_byte_queue.c \
+    tests/test_spsc_byte_queue.c \
+    -o spsc_byte_queue_tests
+    
 Example GCC build:
 
 ```text
@@ -281,7 +307,9 @@ STM32F446RETX_FLASH.ld           Flash linker script
 STM32F446RETX_RAM.ld             RAM linker script
 ```
 
-The UART HAL adapter, TX ring buffer, debounce state machine, application orchestration, and HAL callbacks currently remain in `Core/Src/main.c`.
+The reusable HAL-independent TX queue is implemented in `Core/Src/spsc_byte_queue.c`.
+
+The STM32 UART TX adapter, debounce state machine, application orchestration, and HAL callbacks currently remain in `Core/Src/main.c`.
 
 The reusable command parser is implemented in `Core/Src/command_parser.c`.
 
@@ -301,15 +329,15 @@ HAL-independent circular DMA position accounting, zero-copy block access, overfl
 Peripheral configuration changes should be made in standalone STM32CubeMX using `nucleo_f446re_lab01.ioc`, followed by code generation and rebuilding in STM32CubeIDE.
 
 ## Current limitations
-- TX is interrupt-driven one byte at a time rather than DMA-based.
-- The UART HAL adapter, TX transport, debounce logic, and application orchestration remain in `main.c`.
-- Host-side tests do not yet cover the STM32 HAL adapter or TX transport.
+- TX uses interrupt-driven contiguous blocks rather than DMA.
+- The STM32 UART HAL adapter, debounce logic, and application orchestration remain in `main.c`.
+- Host-side tests cover the TX queue but not the STM32 HAL adapter.
 - The command protocol has no framing, checksum, sequence number, or authentication.
 - The project does not use an RTOS.
 
 ## Planned improvements
 
-- Extract the UART HAL adapter and TX ring buffer from `main.c`
+- Extract the STM32 UART TX adapter from `main.c`
 - Add DMA-based UART transmission
 - Introduce a framed protocol with integrity checking
 - Add telemetry-oriented message handling
