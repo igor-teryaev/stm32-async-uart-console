@@ -299,6 +299,7 @@ Core/
 tests/
 `-- test_command_parser.c        Host-side command-parser tests
 `-- test_dma_circular_stream.c   Host-side DMA-stream tests
+`-- test_spsc_byte_queue.c       Host-side SPSC byte-queue tests
 Drivers/
 |-- CMSIS/                       ARM and STM32 device headers
 `-- STM32F4xx_HAL_Driver/        STM32 HAL drivers
@@ -309,7 +310,9 @@ STM32F446RETX_RAM.ld             RAM linker script
 
 The reusable HAL-independent TX queue is implemented in `Core/Src/spsc_byte_queue.c`.
 
-The STM32 UART TX adapter, debounce state machine, application orchestration, and HAL callbacks currently remain in `Core/Src/main.c`.
+The STM32 UART TX adapter is implemented in `Core/Src/uart_tx_adapter.c`. The global HAL transmit-complete callback remains in `Core/Src/main.c` and routes completion events to the adapter.
+
+The debounce state machine and application orchestration currently remain in `Core/Src/main.c`.
 
 The reusable command parser is implemented in `Core/Src/command_parser.c`.
 
@@ -330,14 +333,13 @@ Peripheral configuration changes should be made in standalone STM32CubeMX using 
 
 ## Current limitations
 - TX uses interrupt-driven contiguous blocks rather than DMA.
-- The STM32 UART HAL adapter, debounce logic, and application orchestration remain in `main.c`.
-- Host-side tests cover the TX queue but not the STM32 HAL adapter.
+- The debounce logic and application orchestration remain in `main.c`.
+- The STM32 UART TX adapter has been validated on NUCLEO-F446RE hardware but is not covered by automated host-side HAL mocks.
 - The command protocol has no framing, checksum, sequence number, or authentication.
 - The project does not use an RTOS.
 
 ## Planned improvements
 
-- Extract the STM32 UART TX adapter from `main.c`
 - Add DMA-based UART transmission
 - Introduce a framed protocol with integrity checking
 - Add telemetry-oriented message handling
