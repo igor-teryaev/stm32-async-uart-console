@@ -1,6 +1,6 @@
 # STM32 Async UART Console
 
-Non-blocking UART command console using circular DMA reception, IDLE-line detection, interrupt-driven transmission, error recovery, and debounced EXTI input on the STM32F446RE.
+Non-blocking UART command console using circular DMA reception, IDLE-line detection, DMA-based transmission, error recovery, and debounced EXTI input on the STM32F446RE.
 
 ## Overview
 
@@ -8,7 +8,8 @@ This project implements an asynchronous command console for the NUCLEO-F446RE de
 
 USART2 reception uses a 256-byte circular DMA buffer with half-transfer, transfer-complete, and IDLE-line events. The main loop processes received data directly from the DMA buffer in contiguous zero-copy blocks.
 
-Transmission uses a tested HAL-independent SPSC byte queue, while the STM32 HAL adapter sends contiguous blocks using interrupts. Command parsing, hardware control, error recovery, and button debounce are performed outside interrupt context.
+Transmission uses a tested HAL-independent SPSC byte queue, while the STM32 HAL adapter sends contiguous blocks using DMA.
+Command parsing, hardware control, error recovery, and button debounce are performed outside interrupt context.
 
 The project demonstrates a bare-metal producer-consumer architecture without an RTOS.
 
@@ -30,7 +31,7 @@ The project demonstrates a bare-metal producer-consumer architecture without an 
 - 1 stop bit
 - No flow control
 - RX: DMA1 Stream 5, circular mode
-- TX: interrupt-driven
+- TX: DMA1 Stream 6, normal mode
 
 ## Features
 
@@ -44,7 +45,7 @@ The project demonstrates a bare-metal producer-consumer architecture without an 
 - Parser resynchronization after RX data loss
 - Deferred UART/DMA recovery outside interrupt context
 - Tested HAL-independent SPSC TX byte queue
-- Interrupt-driven transmission of contiguous TX blocks
+- DMA-based transmission of contiguous TX blocks
 - TX backpressure without command-response loss
 - Line-oriented command parser
 - Reusable command-parser module with explicit per-instance state
@@ -157,9 +158,14 @@ This keeps error callbacks short and avoids performing complex recovery inside a
 
 Application responses are copied into a HAL-independent single-producer/single-consumer byte queue.
 
-Queue writes use up to two `memcpy()` operations when data crosses the physical end of the circular buffer. The new absolute `head` value is published only after both copies complete, preventing the consumer from observing partially written data.
+Queue writes use up to two `memcpy()` operations when data crosses the physical end of the circular buffer.
+The new absolute `head` value is published only after both copies complete, preventing the consumer from observing partially written data.
 
-When USART2 is idle, the HAL adapter obtains the largest contiguous block with `spsc_byte_queue_peek()` and starts the entire block using `HAL_UART_Transmit_IT()`. The adapter stores the active transfer length. The transmit-complete callback consumes exactly that number of bytes and immediately starts the next contiguous block.
+When USART2 is idle, the HAL adapter obtains the largest contiguous block with `spsc_byte_queue_peek()`
+and starts the entire block using `HAL_UART_Transmit_DMA()`.
+The adapter stores the active transfer length.
+The DMA transfer-complete path ultimately invokes the UART transmit-complete callback,
+which consumes exactly the stored active length and immediately starts the next contiguous block.
 
 If HAL cannot start a transfer, accepted data remains queued and the main loop retries later.
 
@@ -332,7 +338,6 @@ HAL-independent circular DMA position accounting, zero-copy block access, overfl
 Peripheral configuration changes should be made in standalone STM32CubeMX using `nucleo_f446re_lab01.ioc`, followed by code generation and rebuilding in STM32CubeIDE.
 
 ## Current limitations
-- TX uses interrupt-driven contiguous blocks rather than DMA.
 - The debounce logic and application orchestration remain in `main.c`.
 - The STM32 UART TX adapter has been validated on NUCLEO-F446RE hardware but is not covered by automated host-side HAL mocks.
 - The command protocol has no framing, checksum, sequence number, or authentication.
@@ -340,7 +345,6 @@ Peripheral configuration changes should be made in standalone STM32CubeMX using 
 
 ## Planned improvements
 
-- Add DMA-based UART transmission
 - Introduce a framed protocol with integrity checking
 - Add telemetry-oriented message handling
 - Evaluate FreeRTOS integration when concurrent tasks require it
