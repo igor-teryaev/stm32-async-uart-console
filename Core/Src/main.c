@@ -115,6 +115,7 @@ static uint8_t response_status[STATUS_RESPONSE_SIZE];
 /* Private function prototypes -----------------------------------------------*/
 void SystemClock_Config(void);
 /* USER CODE BEGIN PFP */
+static bool pending_response_try_enqueue(void);
 static void uart_rx_recovery_poll(void);
 static ButtonEvent button_debounce_poll(void);
 static void uart_tx_poll(void);
@@ -256,13 +257,14 @@ int main(void)
 	  {
 		  const uint8_t *received_data;
 		  bool data_lost;
+		  size_t consumed_length = 0U;
 
 		  size_t received_length =
-				  dma_circular_stream_peek(
-				      &uart_rx_stream,
-				      &received_data,
-				      &data_lost
-				  );
+		      dma_circular_stream_peek(
+		          &uart_rx_stream,
+		          &received_data,
+		          &data_lost
+		      );
 
 		  if (data_lost)
 		  {
@@ -275,6 +277,8 @@ int main(void)
 		  {
 		      const char *command;
 
+		      consumed_length++;
+
 		      if (command_parser_feed_byte(
 		              &command_parser,
 		              received_data[i],
@@ -283,12 +287,22 @@ int main(void)
 		      {
 		          command_count++;
 		          command_process(command);
+
+		          /*
+		           * Зазвичай відповідь одразу копіюється в TX queue.
+		           * Якщо місця немає, вона залишається pending,
+		           * а наступні RX-байти поки не споживаються.
+		           */
+		          if (!pending_response_try_enqueue())
+		          {
+		              break;
+		          }
 		      }
 		  }
 
 		  if (!dma_circular_stream_consume(
 		          &uart_rx_stream,
-		          received_length
+		          consumed_length
 		      ))
 		  {
 		      Error_Handler();
@@ -377,6 +391,26 @@ static void uart_rx_recovery_poll(void)
         uart_rx_restart_error_count++;
         uart_rx_recovery_requested = true;
     }
+}
+
+static bool pending_response_try_enqueue(void)
+{
+    if (pending_response == NULL)
+    {
+        return true;
+    }
+
+    if (!uart_tx_write(
+            pending_response,
+            pending_response_length
+        ))
+    {
+        return false;
+    }
+
+    pending_response = NULL;
+    pending_response_length = 0U;
+    return true;
 }
 
 //обробка отриманих з UART команд
