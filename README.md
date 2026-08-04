@@ -57,6 +57,7 @@ The project demonstrates a bare-metal producer-consumer architecture without an 
 - Runtime diagnostic counters through the UART console
 - Compile-time validation of the DMA buffer size
 - Reusable HAL-independent circular DMA stream module
+- Incremental CRC-16/CCITT-FALSE integrity calculation
 
 ## Supported commands
 
@@ -228,7 +229,7 @@ A deliberately blocked consumer produced the expected overflow count:
 ```
 ## Host-side tests
 
-The command parser, circular DMA stream, and SPSC byte queue modules are independent of STM32 HAL and can be compiled and tested on a development computer.
+The command parser, circular DMA stream, CRC calculation, and SPSC byte queue modules are independent of STM32 HAL and can be compiled and tested on a development computer.
 
 The test suite covers:
 
@@ -295,6 +296,27 @@ gcc -std=c11 -Wall -Wextra -Werror -pedantic \
     -o dma_circular_stream_tests
 ```
 
+### CRC-16/CCITT-FALSE
+
+The CRC test suite covers:
+
+- the standard `"123456789" → 0x29B1` check value;
+- empty input;
+- incremental calculation across multiple blocks;
+- byte-order changes;
+- single-bit corruption;
+- zero-length state preservation.
+
+Example GCC build:
+
+```text
+gcc -std=c11 -Wall -Wextra -Werror -pedantic \
+    -ICore/Inc \
+    Core/Src/crc16_ccitt.c \
+    tests/test_crc16_ccitt.c \
+    -o crc16_ccitt_tests
+```
+
 ## Project structure
 
 ```text
@@ -306,6 +328,7 @@ tests/
 `-- test_command_parser.c        Host-side command-parser tests
 `-- test_dma_circular_stream.c   Host-side DMA-stream tests
 `-- test_spsc_byte_queue.c       Host-side SPSC byte-queue tests
+`-- test_crc16_ccitt.c           Host-side CRC-16 tests
 Drivers/
 |-- CMSIS/                       ARM and STM32 device headers
 `-- STM32F4xx_HAL_Driver/        STM32 HAL drivers
@@ -323,6 +346,8 @@ The debounce state machine and application orchestration currently remain in `Co
 The reusable command parser is implemented in `Core/Src/command_parser.c`.
 
 HAL-independent circular DMA position accounting, zero-copy block access, overflow detection, and restart alignment are implemented in `Core/Src/dma_circular_stream.c`.
+
+Incremental CRC-16/CCITT-FALSE calculation is implemented in `Core/Src/crc16_ccitt.c`.
 
 ## Build and run
 
