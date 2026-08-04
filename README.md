@@ -58,6 +58,9 @@ The project demonstrates a bare-metal producer-consumer architecture without an 
 - Compile-time validation of the DMA buffer size
 - Reusable HAL-independent circular DMA stream module
 - Incremental CRC-16/CCITT-FALSE integrity calculation
+- Versioned binary frame format with explicit big-endian serialization
+- CRC-protected frame encoder
+- Streaming frame decoder with noise rejection and resynchronization
 
 ## Supported commands
 
@@ -171,6 +174,39 @@ which consumes exactly the stored active length and immediately starts the next 
 If HAL cannot start a transfer, accepted data remains queued and the main loop retries later.
 
 If a command response does not fit in the TX queue, the completed command is not executed again. Its response remains pending, RX consumption stops at the exact processed byte boundary, and parsing resumes after TX capacity becomes available.
+
+### Binary frame codec
+
+A HAL-independent binary frame codec is implemented but is not yet connected to the line-oriented UART console.
+
+The wire format is:
+
+| Offset | Size | Field |
+|---:|---:|---|
+| 0 | 1 | Magic `0xA5` |
+| 1 | 1 | Magic `0x5A` |
+| 2 | 1 | Protocol version |
+| 3 | 1 | Message type |
+| 4 | 2 | Sequence ID, big-endian |
+| 6 | 2 | Payload length, big-endian |
+| 8 | 0–64 | Payload |
+| 8 + N | 2 | CRC-16/CCITT-FALSE, big-endian |
+
+The CRC covers `VERSION`, `TYPE`, `SEQUENCE`, `PAYLOAD_LENGTH`, and `PAYLOAD`. Magic bytes and the transmitted CRC are excluded.
+
+The encoder serializes every field explicitly rather than copying a C structure, avoiding padding, alignment, ABI, and endianness dependencies.
+
+The decoder accepts one byte at a time and supports:
+
+- noise before a frame;
+- overlapping magic candidates such as `A5 A5 5A`;
+- frames split across arbitrary transport blocks;
+- multiple frames in one transport block;
+- zero-length payloads;
+- invalid-version rejection;
+- oversized-length rejection;
+- CRC-error detection;
+- stream resynchronization after errors.
 
 ### Command parser
 
@@ -316,6 +352,12 @@ gcc -std=c11 -Wall -Wextra -Werror -pedantic \
     tests/test_crc16_ccitt.c \
     -o crc16_ccitt_tests
 ```
+### Binary frame codec
+
+Encoder tests cover known wire bytes, big-endian serialization, empty and maximum payloads, output-capacity checks, oversized payloads, and invalid arguments.
+
+Decoder tests use independent fixed wire vectors and cover byte-wise input, transport-block boundaries,
+multiple frames, overlapping magic, empty payloads, malformed headers, CRC failures, recovery, and diagnostic preservation.
 
 ## Project structure
 
@@ -329,6 +371,8 @@ tests/
 `-- test_dma_circular_stream.c   Host-side DMA-stream tests
 `-- test_spsc_byte_queue.c       Host-side SPSC byte-queue tests
 `-- test_crc16_ccitt.c           Host-side CRC-16 tests
+`-- test_protocol_frame.c        Host-side frame-encoder tests
+`-- test_protocol_frame_decoder.c Host-side streaming-decoder tests
 Drivers/
 |-- CMSIS/                       ARM and STM32 device headers
 `-- STM32F4xx_HAL_Driver/        STM32 HAL drivers
@@ -349,6 +393,10 @@ HAL-independent circular DMA position accounting, zero-copy block access, overfl
 
 Incremental CRC-16/CCITT-FALSE calculation is implemented in `Core/Src/crc16_ccitt.c`.
 
+Binary frame encoding is implemented in `Core/Src/protocol_frame.c`.
+
+Streaming frame decoding and resynchronization are implemented in `Core/Src/protocol_frame_decoder.c`.
+
 ## Build and run
 
 1. Clone the repository.
@@ -365,12 +413,14 @@ Peripheral configuration changes should be made in standalone STM32CubeMX using 
 ## Current limitations
 - The debounce logic and application orchestration remain in `main.c`.
 - The STM32 UART TX adapter has been validated on NUCLEO-F446RE hardware but is not covered by automated host-side HAL mocks.
-- The command protocol has no framing, checksum, sequence number, or authentication.
+- The active UART console remains line-oriented; the tested binary frame codec is not yet integrated.
+- Sequence IDs are encoded but duplicate suppression, acknowledgements, timeouts, and retries are not yet implemented.
 - The project does not use an RTOS.
 
 ## Planned improvements
 
-- Introduce a framed protocol with integrity checking
+- Integrate the binary frame codec with the UART transport
+- Add duplicate suppression, acknowledgements, timeouts, and retries
 - Add telemetry-oriented message handling
 - Evaluate FreeRTOS integration when concurrent tasks require it
 - Run host-side tests automatically in continuous integration
