@@ -21,6 +21,14 @@
     (PROTOCOL_FRAME_HEADER_SIZE +       \
      PROTOCOL_FRAME_MAX_PAYLOAD_SIZE +  \
      PROTOCOL_FRAME_CRC_SIZE)
+typedef struct
+{
+    uint8_t version;
+    uint8_t type;
+    uint16_t sequence;
+    uint16_t payload_length;
+    uint8_t payload[PROTOCOL_FRAME_MAX_PAYLOAD_SIZE];
+} ProtocolFrame;
 
 bool protocol_frame_encode(
     uint8_t type,
