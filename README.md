@@ -61,6 +61,8 @@ The project demonstrates a bare-metal producer-consumer architecture without an 
 - Versioned binary frame format with explicit big-endian serialization
 - CRC-protected frame encoder
 - Streaming frame decoder with noise rejection and resynchronization
+- Stop-and-wait sequence tracking with duplicate and out-of-order detection
+- Correct 16-bit sequence wrap-around
 
 ## Supported commands
 
@@ -359,6 +361,12 @@ Encoder tests cover known wire bytes, big-endian serialization, empty and maximu
 Decoder tests use independent fixed wire vectors and cover byte-wise input, transport-block boundaries,
 multiple frames, overlapping magic, empty payloads, malformed headers, CRC failures, recovery, and diagnostic preservation.
 
+### Protocol sequence tracker
+
+The sequence tracker tests cover initial synchronization, expected frames,
+duplicate suppression, out-of-order frames, 16-bit wrap-around,
+duplicate detection at the wrap boundary, session reset, and diagnostic preservation.
+
 ## Project structure
 
 ```text
@@ -373,6 +381,7 @@ tests/
 `-- test_crc16_ccitt.c           Host-side CRC-16 tests
 `-- test_protocol_frame.c        Host-side frame-encoder tests
 `-- test_protocol_frame_decoder.c Host-side streaming-decoder tests
+`-- test_protocol_sequence_tracker.c Host-side sequence-tracker tests
 Drivers/
 |-- CMSIS/                       ARM and STM32 device headers
 `-- STM32F4xx_HAL_Driver/        STM32 HAL drivers
@@ -397,6 +406,8 @@ Binary frame encoding is implemented in `Core/Src/protocol_frame.c`.
 
 Streaming frame decoding and resynchronization are implemented in `Core/Src/protocol_frame_decoder.c`.
 
+Stop-and-wait sequence classification and duplicate detection are implemented in `Core/Src/protocol_sequence_tracker.c`.
+
 ## Build and run
 
 1. Clone the repository.
@@ -414,13 +425,16 @@ Peripheral configuration changes should be made in standalone STM32CubeMX using 
 - The debounce logic and application orchestration remain in `main.c`.
 - The STM32 UART TX adapter has been validated on NUCLEO-F446RE hardware but is not covered by automated host-side HAL mocks.
 - The active UART console remains line-oriented; the tested binary frame codec is not yet integrated.
-- Sequence IDs are encoded but duplicate suppression, acknowledgements, timeouts, and retries are not yet implemented.
+- The tested sequence tracker is not yet integrated with decoded frames.
+- Acknowledgements, timeout handling, retransmission, and session establishment are not yet implemented.
 - The project does not use an RTOS.
 
 ## Planned improvements
 
 - Integrate the binary frame codec with the UART transport
 - Add duplicate suppression, acknowledgements, timeouts, and retries
+- Integrate sequence tracking with decoded command frames
+- Add acknowledgements, timeout handling, and retransmission
 - Add telemetry-oriented message handling
 - Evaluate FreeRTOS integration when concurrent tasks require it
 - Run host-side tests automatically in continuous integration
