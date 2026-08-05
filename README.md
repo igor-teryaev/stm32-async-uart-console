@@ -63,6 +63,11 @@ The project demonstrates a bare-metal producer-consumer architecture without an 
 - Streaming frame decoder with noise rejection and resynchronization
 - Stop-and-wait sequence tracking with duplicate and out-of-order detection
 - Correct 16-bit sequence wrap-around
+- Two-phase sequence classification and commit
+- Receiver-side stop-and-wait session state machine
+- Duplicate suppression while a command is executing
+- Cached terminal-result retransmission for completed duplicates
+- Deferred command retry without sequence advancement
 
 ## Supported commands
 
@@ -210,6 +215,26 @@ The decoder accepts one byte at a time and supports:
 - CRC-error detection;
 - stream resynchronization after errors.
 
+### Protocol receiver session
+
+A tested HAL-independent receiver session coordinates decoded command frames with the stop-and-wait sequence tracker.
+
+A new command is first classified but not immediately committed. The session returns one of the following actions:
+
+- `EXECUTE` — execute a new command;
+- `IN_PROGRESS` — the same command is already executing;
+- `RESEND_RESULT` — resend the cached terminal result without executing the command again;
+- `OUT_OF_ORDER` — reject a command with an unexpected sequence;
+- `IGNORED` — the frame is not a command.
+
+Sequence advancement occurs only after `protocol_receiver_session_complete()` records a terminal success or failure.
+
+A temporarily unavailable command may be released with `protocol_receiver_session_defer()`.
+This does not advance the sequence, so retrying the same command is classified as new.
+
+The most recent terminal result is cached because the sender may retransmit a command when its previous response was lost.
+Under stop-and-wait operation, only one completed result needs to be retained.
+
 ### Command parser
 
 The parser accepts a byte stream independently of DMA event boundaries. A command may therefore arrive:
@@ -323,8 +348,9 @@ gcc -std=c11 -Wall -Wextra -Werror -pedantic \
     Core/Src/spsc_byte_queue.c \
     tests/test_spsc_byte_queue.c \
     -o spsc_byte_queue_tests
-    
-Example GCC build:
+```
+
+### Circular DMA stream
 
 ```text
 gcc -std=c11 -Wall -Wextra -Werror -pedantic \
@@ -367,6 +393,21 @@ The sequence tracker tests cover initial synchronization, expected frames,
 duplicate suppression, out-of-order frames, 16-bit wrap-around,
 duplicate detection at the wrap boundary, session reset, and diagnostic preservation.
 
+### Protocol receiver session
+
+The receiver-session tests cover:
+
+- new-command execution without premature sequence commit;
+- duplicate detection while a command is in progress;
+- rejection of a different command while one is pending;
+- deferred retry using the same sequence;
+- terminal success and failure commit;
+- cached-result retransmission without duplicate execution;
+- out-of-order sequence reporting;
+- incorrect completion rejection;
+- 16-bit sequence wrap-around;
+- session reset with diagnostic preservation.
+
 ## Project structure
 
 ```text
@@ -382,6 +423,7 @@ tests/
 `-- test_protocol_frame.c        Host-side frame-encoder tests
 `-- test_protocol_frame_decoder.c Host-side streaming-decoder tests
 `-- test_protocol_sequence_tracker.c Host-side sequence-tracker tests
+`-- test_protocol_receiver_session.c Host-side receiver-session tests
 Drivers/
 |-- CMSIS/                       ARM and STM32 device headers
 `-- STM32F4xx_HAL_Driver/        STM32 HAL drivers
@@ -408,6 +450,9 @@ Streaming frame decoding and resynchronization are implemented in `Core/Src/prot
 
 Stop-and-wait sequence classification and duplicate detection are implemented in `Core/Src/protocol_sequence_tracker.c`.
 
+Receiver-side command execution, pending-command handling, deferred retry,
+and cached terminal-result retransmission are implemented in `Core/Src/protocol_receiver_session.c`.
+
 ## Build and run
 
 1. Clone the repository.
@@ -425,16 +470,18 @@ Peripheral configuration changes should be made in standalone STM32CubeMX using 
 - The debounce logic and application orchestration remain in `main.c`.
 - The STM32 UART TX adapter has been validated on NUCLEO-F446RE hardware but is not covered by automated host-side HAL mocks.
 - The active UART console remains line-oriented; the tested binary frame codec is not yet integrated.
-- The tested sequence tracker is not yet integrated with decoded frames.
-- Acknowledgements, timeout handling, retransmission, and session establishment are not yet implemented.
+- The tested receiver session is not yet integrated with the frame decoder or application command execution.
+- The receiver caches only the most recent terminal result in RAM; reset or power loss clears this state.
+- Sender-side timeout handling, retransmission, and session establishment are not yet implemented.
 - The project does not use an RTOS.
 
 ## Planned improvements
 
 - Integrate the binary frame codec with the UART transport
-- Add duplicate suppression, acknowledgements, timeouts, and retries
-- Integrate sequence tracking with decoded command frames
-- Add acknowledgements, timeout handling, and retransmission
+- Integrate the binary frame decoder with the receiver session
+- Connect receiver actions to application command execution and framed responses
+- Implement a sender-side stop-and-wait session with timeout and retransmission
+- Define session startup and resynchronization behavior
 - Add telemetry-oriented message handling
 - Evaluate FreeRTOS integration when concurrent tasks require it
 - Run host-side tests automatically in continuous integration
