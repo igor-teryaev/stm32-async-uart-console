@@ -22,11 +22,16 @@ static void test_first_sequence_is_accepted(void)
     protocol_sequence_tracker_init(&tracker);
 
     assert(
-        protocol_sequence_tracker_process(
+        protocol_sequence_tracker_classify(
             &tracker,
             100U
         ) == PROTOCOL_SEQUENCE_RESULT_NEW
     );
+
+    assert(protocol_sequence_tracker_commit(
+        &tracker,
+		100U
+    ));
 
     assert(tracker.initialized);
     assert(tracker.last_accepted_sequence == 100U);
@@ -41,18 +46,28 @@ static void test_expected_sequence_is_accepted(void)
     protocol_sequence_tracker_init(&tracker);
 
     assert(
-        protocol_sequence_tracker_process(
+        protocol_sequence_tracker_classify(
             &tracker,
             41U
         ) == PROTOCOL_SEQUENCE_RESULT_NEW
     );
 
+    assert(protocol_sequence_tracker_commit(
+        &tracker,
+		41U
+    ));
+
     assert(
-        protocol_sequence_tracker_process(
+        protocol_sequence_tracker_classify(
             &tracker,
             42U
         ) == PROTOCOL_SEQUENCE_RESULT_NEW
     );
+
+    assert(protocol_sequence_tracker_commit(
+        &tracker,
+		42U
+    ));
 
     assert(tracker.last_accepted_sequence == 42U);
     assert(tracker.expected_sequence == 43U);
@@ -66,14 +81,19 @@ static void test_duplicate_is_not_accepted_again(void)
     protocol_sequence_tracker_init(&tracker);
 
     assert(
-        protocol_sequence_tracker_process(
+        protocol_sequence_tracker_classify(
             &tracker,
             42U
         ) == PROTOCOL_SEQUENCE_RESULT_NEW
     );
 
+    assert(protocol_sequence_tracker_commit(
+        &tracker,
+		42U
+    ));
+
     assert(
-        protocol_sequence_tracker_process(
+        protocol_sequence_tracker_classify(
             &tracker,
             42U
         ) == PROTOCOL_SEQUENCE_RESULT_DUPLICATE
@@ -91,14 +111,19 @@ static void test_out_of_order_sequence(void)
     protocol_sequence_tracker_init(&tracker);
 
     assert(
-        protocol_sequence_tracker_process(
+        protocol_sequence_tracker_classify(
             &tracker,
             10U
         ) == PROTOCOL_SEQUENCE_RESULT_NEW
     );
 
+    assert(protocol_sequence_tracker_commit(
+        &tracker,
+		10U
+    ));
+
     assert(
-        protocol_sequence_tracker_process(
+        protocol_sequence_tracker_classify(
             &tracker,
             12U
         ) ==
@@ -106,7 +131,7 @@ static void test_out_of_order_sequence(void)
     );
 
     assert(
-        protocol_sequence_tracker_process(
+        protocol_sequence_tracker_classify(
             &tracker,
             9U
         ) ==
@@ -125,20 +150,30 @@ static void test_wrap_around(void)
     protocol_sequence_tracker_init(&tracker);
 
     assert(
-        protocol_sequence_tracker_process(
+        protocol_sequence_tracker_classify(
             &tracker,
             UINT16_MAX
         ) == PROTOCOL_SEQUENCE_RESULT_NEW
     );
 
+    assert(protocol_sequence_tracker_commit(
+        &tracker,
+		UINT16_MAX
+    ));
+
     assert(tracker.expected_sequence == 0U);
 
     assert(
-        protocol_sequence_tracker_process(
+        protocol_sequence_tracker_classify(
             &tracker,
             0U
         ) == PROTOCOL_SEQUENCE_RESULT_NEW
     );
+
+    assert(protocol_sequence_tracker_commit(
+        &tracker,
+		0U
+    ));
 
     assert(tracker.last_accepted_sequence == 0U);
     assert(tracker.expected_sequence == 1U);
@@ -151,14 +186,19 @@ static void test_duplicate_at_wrap_boundary(void)
     protocol_sequence_tracker_init(&tracker);
 
     assert(
-        protocol_sequence_tracker_process(
+        protocol_sequence_tracker_classify(
             &tracker,
             UINT16_MAX
         ) == PROTOCOL_SEQUENCE_RESULT_NEW
     );
 
+    assert(protocol_sequence_tracker_commit(
+        &tracker,
+		UINT16_MAX
+    ));
+
     assert(
-        protocol_sequence_tracker_process(
+        protocol_sequence_tracker_classify(
             &tracker,
             UINT16_MAX
         ) == PROTOCOL_SEQUENCE_RESULT_DUPLICATE
@@ -174,14 +214,19 @@ static void test_session_reset_preserves_diagnostics(void)
     protocol_sequence_tracker_init(&tracker);
 
     assert(
-        protocol_sequence_tracker_process(
+        protocol_sequence_tracker_classify(
             &tracker,
             10U
         ) == PROTOCOL_SEQUENCE_RESULT_NEW
     );
 
+    assert(protocol_sequence_tracker_commit(
+        &tracker,
+		10U
+    ));
+
     assert(
-        protocol_sequence_tracker_process(
+        protocol_sequence_tracker_classify(
             &tracker,
             10U
         ) == PROTOCOL_SEQUENCE_RESULT_DUPLICATE
@@ -199,11 +244,15 @@ static void test_session_reset_preserves_diagnostics(void)
      * A new session may start from any sequence.
      */
     assert(
-        protocol_sequence_tracker_process(
+        protocol_sequence_tracker_classify(
             &tracker,
             500U
         ) == PROTOCOL_SEQUENCE_RESULT_NEW
     );
+    assert(protocol_sequence_tracker_commit(
+        &tracker,
+		500U
+    ));
 
     assert(tracker.expected_sequence == 501U);
 }
@@ -211,14 +260,81 @@ static void test_session_reset_preserves_diagnostics(void)
 static void test_invalid_tracker(void)
 {
     assert(
-        protocol_sequence_tracker_process(
+        protocol_sequence_tracker_classify(
             NULL,
             1U
         ) == PROTOCOL_SEQUENCE_RESULT_INVALID
     );
 
+    assert(!protocol_sequence_tracker_commit(
+        NULL,
+        1U
+    ));
+
     protocol_sequence_tracker_init(NULL);
     protocol_sequence_tracker_reset_session(NULL);
+}
+
+static void test_retry_remains_new_without_commit(void)
+{
+    ProtocolSequenceTracker tracker;
+
+    protocol_sequence_tracker_init(&tracker);
+
+    assert(
+        protocol_sequence_tracker_classify(
+            &tracker,
+            42U
+        ) == PROTOCOL_SEQUENCE_RESULT_NEW
+    );
+
+    /*
+     * Application was temporarily busy:
+     * no commit was performed.
+     */
+    assert(
+        protocol_sequence_tracker_classify(
+            &tracker,
+            42U
+        ) == PROTOCOL_SEQUENCE_RESULT_NEW
+    );
+
+    assert(!tracker.initialized);
+    assert(tracker.accepted_count == 0U);
+
+    assert(protocol_sequence_tracker_commit(
+        &tracker,
+        42U
+    ));
+
+    assert(
+        protocol_sequence_tracker_classify(
+            &tracker,
+            42U
+        ) ==
+        PROTOCOL_SEQUENCE_RESULT_DUPLICATE
+    );
+}
+
+static void test_commit_rejects_unexpected_sequence(void)
+{
+    ProtocolSequenceTracker tracker;
+
+    protocol_sequence_tracker_init(&tracker);
+
+    assert(protocol_sequence_tracker_commit(
+        &tracker,
+        10U
+    ));
+
+    assert(!protocol_sequence_tracker_commit(
+        &tracker,
+        12U
+    ));
+
+    assert(tracker.last_accepted_sequence == 10U);
+    assert(tracker.expected_sequence == 11U);
+    assert(tracker.accepted_count == 1U);
 }
 
 int main(void)
@@ -232,6 +348,8 @@ int main(void)
     test_duplicate_at_wrap_boundary();
     test_session_reset_preserves_diagnostics();
     test_invalid_tracker();
+    test_commit_rejects_unexpected_sequence();
+    test_retry_remains_new_without_commit();
 
     puts("All protocol sequence tracker tests passed.");
     return 0;

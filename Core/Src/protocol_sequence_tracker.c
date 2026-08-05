@@ -45,7 +45,7 @@ void protocol_sequence_tracker_reset_session(
 }
 
 ProtocolSequenceResult
-protocol_sequence_tracker_process(
+protocol_sequence_tracker_classify(
     ProtocolSequenceTracker *tracker,
     uint16_t sequence
 )
@@ -57,11 +57,6 @@ protocol_sequence_tracker_process(
 
     if (!tracker->initialized)
     {
-        protocol_sequence_tracker_accept(
-            tracker,
-            sequence
-        );
-
         return PROTOCOL_SEQUENCE_RESULT_NEW;
     }
 
@@ -75,15 +70,43 @@ protocol_sequence_tracker_process(
 
     if (sequence == tracker->expected_sequence)
     {
-        protocol_sequence_tracker_accept(
-            tracker,
-            sequence
-        );
-
         return PROTOCOL_SEQUENCE_RESULT_NEW;
     }
 
     tracker->out_of_order_count++;
 
     return PROTOCOL_SEQUENCE_RESULT_OUT_OF_ORDER;
+}
+
+bool protocol_sequence_tracker_commit(
+    ProtocolSequenceTracker *tracker,
+    uint16_t sequence
+)
+{
+    if (tracker == NULL)
+    {
+        return false;
+    }
+
+    if (!tracker->initialized)
+    {
+        protocol_sequence_tracker_accept(
+            tracker,
+            sequence
+        );
+
+        return true;
+    }
+
+    if (sequence != tracker->expected_sequence)
+    {
+        return false;
+    }
+
+    protocol_sequence_tracker_accept(
+        tracker,
+        sequence
+    );
+
+    return true;
 }

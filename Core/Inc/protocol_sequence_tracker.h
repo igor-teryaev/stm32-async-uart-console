@@ -32,7 +32,12 @@ void protocol_sequence_tracker_reset_session(
 );
 
 ProtocolSequenceResult
-protocol_sequence_tracker_process(
+protocol_sequence_tracker_classify(
+    ProtocolSequenceTracker *tracker,
+    uint16_t sequence
+);
+
+bool protocol_sequence_tracker_commit(
     ProtocolSequenceTracker *tracker,
     uint16_t sequence
 );
