@@ -68,6 +68,13 @@ The project demonstrates a bare-metal producer-consumer architecture without an 
 - Duplicate suppression while a command is executing
 - Cached terminal-result retransmission for completed duplicates
 - Deferred command retry without sequence advancement
+- HAL-independent sender-side stop-and-wait session
+- Configurable response timeout and maximum transmission attempts
+- Wrap-safe timeout handling across the 32-bit tick boundary
+- Retransmission of identical encoded frame bytes and sequence ID
+- `IN_PROGRESS` handling with timeout renewal
+- Recovery through late terminal results
+- Explicit distinction between command failure and unknown communication outcome
 
 ## Supported commands
 
@@ -234,6 +241,31 @@ This does not advance the sequence, so retrying the same command is classified a
 
 The most recent terminal result is cached because the sender may retransmit a command when its previous response was lost.
 Under stop-and-wait operation, only one completed result needs to be retained.
+
+### Protocol sender session
+
+A tested HAL-independent sender session manages one outstanding command at a time.
+
+The sender:
+
+- assigns a sequence ID to a new command;
+- encodes and retains the complete frame for retransmission;
+- exposes the retained frame to an external transport;
+- starts the response timeout only after transmission completion;
+- retries the same encoded frame and sequence after timeout;
+- renews the timeout after a matching `IN_PROGRESS` response;
+- stores a matching terminal result;
+- advances the sequence only after the command outcome becomes known.
+
+The configured `max_attempts` includes the initial transmission. For example, `max_attempts = 3` permits one initial transmission and two retries.
+
+If all attempts are exhausted, the sender enters `COMMUNICATION_FAILED`.
+This means that the command outcome is unknown, not that the receiver definitely rejected or failed to execute the command.
+
+A matching late terminal result may recover this state because no later command can start while the session remains failed.
+
+The pending encoded frame remains owned by the sender session until any active transport operation completes.
+This prevents a new command from overwriting memory still being read by a zero-copy transport.
 
 ### Command parser
 
@@ -408,6 +440,25 @@ The receiver-session tests cover:
 - 16-bit sequence wrap-around;
 - session reset with diagnostic preservation.
 
+### Protocol sender session
+
+The sender-session tests cover:
+
+- initial command encoding and transmission;
+- exact-frame retransmission;
+- configurable attempt exhaustion;
+- transport transmission errors;
+- response timeout boundaries;
+- wrap-safe timeout calculation across `UINT32_MAX`;
+- matching and mismatched `IN_PROGRESS` responses;
+- timeout renewal and scheduled-retry cancellation;
+- terminal command success and failure;
+- late terminal results during active retransmission;
+- late-result recovery after communication failure;
+- protection of transport-owned frame memory;
+- 16-bit sequence wrap-around;
+- session reset with diagnostic preservation.
+
 ## Project structure
 
 ```text
@@ -424,6 +475,7 @@ tests/
 `-- test_protocol_frame_decoder.c Host-side streaming-decoder tests
 `-- test_protocol_sequence_tracker.c Host-side sequence-tracker tests
 `-- test_protocol_receiver_session.c Host-side receiver-session tests
+`-- test_protocol_sender_session.c Host-side sender-session tests
 Drivers/
 |-- CMSIS/                       ARM and STM32 device headers
 `-- STM32F4xx_HAL_Driver/        STM32 HAL drivers
@@ -453,6 +505,9 @@ Stop-and-wait sequence classification and duplicate detection are implemented in
 Receiver-side command execution, pending-command handling, deferred retry,
 and cached terminal-result retransmission are implemented in `Core/Src/protocol_receiver_session.c`.
 
+Sender-side timeout handling, retransmission scheduling, transmission ownership,
+terminal-result handling, and late-result recovery are implemented in `Core/Src/protocol_sender_session.c`.
+
 ## Build and run
 
 1. Clone the repository.
@@ -470,18 +525,19 @@ Peripheral configuration changes should be made in standalone STM32CubeMX using 
 - The debounce logic and application orchestration remain in `main.c`.
 - The STM32 UART TX adapter has been validated on NUCLEO-F446RE hardware but is not covered by automated host-side HAL mocks.
 - The active UART console remains line-oriented; the tested binary frame codec is not yet integrated.
-- The tested receiver session is not yet integrated with the frame decoder or application command execution.
 - The receiver caches only the most recent terminal result in RAM; reset or power loss clears this state.
-- Sender-side timeout handling, retransmission, and session establishment are not yet implemented.
+- The tested sender and receiver sessions are not yet connected to the frame decoder, UART transport, or application command execution.
+- A sender communication failure still requires session resynchronization if no late terminal result arrives.
+- Session identifiers and startup/resynchronization handshake are not yet implemented.
+- `IN_PROGRESS` renews the response timeout, but a separate maximum operation-duration timeout is not yet implemented.
 - The project does not use an RTOS.
 
 ## Planned improvements
 
-- Integrate the binary frame codec with the UART transport
-- Integrate the binary frame decoder with the receiver session
-- Connect receiver actions to application command execution and framed responses
-- Implement a sender-side stop-and-wait session with timeout and retransmission
-- Define session startup and resynchronization behavior
+- Integrate the binary frame codec and sender/receiver sessions with the UART transport and application command execution
+- Define framed `IN_PROGRESS` and terminal-result payloads
+- Implement session identifiers and startup/resynchronization handshake
+- Add an independent maximum operation-duration timeout
 - Add telemetry-oriented message handling
 - Evaluate FreeRTOS integration when concurrent tasks require it
 - Run host-side tests automatically in continuous integration
