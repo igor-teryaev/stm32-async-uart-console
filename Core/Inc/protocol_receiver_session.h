@@ -1,7 +1,7 @@
 #ifndef PROTOCOL_RECEIVER_SESSION_H
 #define PROTOCOL_RECEIVER_SESSION_H
 
-#include "protocol_frame.h"
+#include "protocol_feedback.h"
 #include "protocol_sequence_tracker.h"
 
 #include <stdbool.h>
@@ -23,6 +23,8 @@ typedef struct
     uint16_t sequence;
     uint16_t expected_sequence;
     uint8_t result_code;
+    const uint8_t *result_data;
+    size_t result_data_length;
 } ProtocolReceiverDecision;
 
 typedef struct
@@ -35,6 +37,11 @@ typedef struct
     bool cached_result_valid;
     uint16_t cached_result_sequence;
     uint8_t cached_result_code;
+    uint8_t cached_result_data[
+        PROTOCOL_RESPONSE_MAX_DATA_SIZE
+    ];
+
+    size_t cached_result_data_length;
 
     uint32_t execute_count;
     uint32_t in_progress_count;
@@ -60,7 +67,9 @@ bool protocol_receiver_session_handle_frame(
 bool protocol_receiver_session_complete(
     ProtocolReceiverSession *session,
     uint16_t sequence,
-    uint8_t result_code
+    uint8_t result_code,
+    const uint8_t *result_data,
+    size_t result_data_length
 );
 
 bool protocol_receiver_session_defer(

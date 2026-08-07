@@ -223,7 +223,9 @@ static void test_success_is_committed(void)
     assert(protocol_receiver_session_complete(
         &session,
         42U,
-        RESULT_SUCCESS
+        RESULT_SUCCESS,
+		NULL,
+		0U
     ));
 
     assert(!session.pending_valid);
@@ -262,7 +264,9 @@ static void test_duplicate_resends_cached_result(void)
     assert(protocol_receiver_session_complete(
         &session,
         42U,
-        RESULT_SUCCESS
+        RESULT_SUCCESS,
+		NULL,
+		0U
     ));
 
     ProtocolReceiverDecision decision =
@@ -307,7 +311,9 @@ static void test_terminal_failure_is_cached(void)
     assert(protocol_receiver_session_complete(
         &session,
         100U,
-        RESULT_FAILED
+        RESULT_FAILED,
+		NULL,
+		0U
     ));
 
     ProtocolReceiverDecision duplicate =
@@ -355,7 +361,9 @@ static void test_out_of_order_reports_expected(void)
     assert(protocol_receiver_session_complete(
         &session,
         10U,
-        RESULT_SUCCESS
+        RESULT_SUCCESS,
+		NULL,
+		0U
     ));
 
     ProtocolReceiverDecision decision =
@@ -389,7 +397,9 @@ static void test_wrong_completion_is_rejected(void)
     assert(!protocol_receiver_session_complete(
         &session,
         43U,
-        RESULT_SUCCESS
+        RESULT_SUCCESS,
+		NULL,
+		0U
     ));
 
     assert(session.pending_valid);
@@ -429,7 +439,9 @@ static void test_sequence_wrap_around(void)
     assert(protocol_receiver_session_complete(
         &session,
         UINT16_MAX,
-        RESULT_SUCCESS
+        RESULT_SUCCESS,
+		NULL,
+		0U
     ));
 
     assert(
@@ -513,7 +525,9 @@ static void test_invalid_arguments(void)
     assert(!protocol_receiver_session_complete(
         NULL,
         1U,
-        RESULT_SUCCESS
+        RESULT_SUCCESS,
+		NULL,
+		0U
     ));
 
     assert(!protocol_receiver_session_defer(

@@ -38,7 +38,8 @@ ProtocolRouteResult protocol_session_route_receiver_decision(
 	case PROTOCOL_RECEIVER_ACTION_RESEND_RESULT:
 		encoded = protocol_feedback_encode_response(decision->sequence,
 				decision->result_code,
-				NULL, 0U, output, output_capacity, &encoded_length);
+				decision->result_data,
+				decision->result_data_length, output, output_capacity, &encoded_length);
 		break;
 
 	case PROTOCOL_RECEIVER_ACTION_OUT_OF_ORDER:

@@ -12,6 +12,8 @@ static void protocol_receiver_decision_clear(
     decision->sequence = 0U;
     decision->expected_sequence = 0U;
     decision->result_code = 0U;
+    decision->result_data = NULL;
+    decision->result_data_length = 0U;
 }
 
 void protocol_receiver_session_init(
@@ -49,6 +51,7 @@ void protocol_receiver_session_reset(
     session->cached_result_valid = false;
     session->cached_result_sequence = 0U;
     session->cached_result_code = 0U;
+    session->cached_result_data_length = 0U;
 }
 
 bool protocol_receiver_session_handle_frame(
@@ -140,6 +143,11 @@ bool protocol_receiver_session_handle_frame(
 
             decision->result_code =
                 session->cached_result_code;
+            decision->result_data =
+                session->cached_result_data;
+
+            decision->result_data_length =
+                session->cached_result_data_length;
 
             decision->expected_sequence =
                 session->command_tracker
@@ -167,12 +175,18 @@ bool protocol_receiver_session_handle_frame(
 bool protocol_receiver_session_complete(
     ProtocolReceiverSession *session,
     uint16_t sequence,
-    uint8_t result_code
+    uint8_t result_code,
+    const uint8_t *result_data,
+    size_t result_data_length
 )
 {
     if ((session == NULL) ||
         !session->pending_valid ||
-        (sequence != session->pending_sequence))
+        (sequence != session->pending_sequence) ||
+        (result_data_length >
+         PROTOCOL_RESPONSE_MAX_DATA_SIZE) ||
+        ((result_data_length > 0U) &&
+         (result_data == NULL)))
     {
         return false;
     }
@@ -184,6 +198,18 @@ bool protocol_receiver_session_complete(
     {
         return false;
     }
+
+    if (result_data_length > 0U)
+    {
+        memcpy(
+            session->cached_result_data,
+            result_data,
+            result_data_length
+        );
+    }
+
+    session->cached_result_data_length =
+        result_data_length;
 
     session->cached_result_valid = true;
     session->cached_result_sequence = sequence;
