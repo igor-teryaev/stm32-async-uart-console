@@ -75,7 +75,9 @@ The project demonstrates a bare-metal producer-consumer architecture without an 
 - Two-phase sequence classification and commit
 - Receiver-side stop-and-wait session state machine
 - Duplicate suppression while a command is executing
-- Cached terminal-result retransmission for completed duplicates
+- Receiver-owned caching of terminal result code and optional result data
+- Cached terminal-response retransmission without duplicate command execution
+- End-to-end recovery after lost ACK and terminal RESPONSE
 - Deferred command retry without sequence advancement
 - HAL-independent sender-side stop-and-wait session
 - Configurable response timeout and maximum transmission attempts
@@ -278,6 +280,10 @@ This does not advance the sequence, so retrying the same command is classified a
 The most recent terminal result is cached because the sender may retransmit a command when its previous response was lost.
 Under stop-and-wait operation, only one completed result needs to be retained.
 
+Both the result code and optional result data are copied into receiver-owned storage.
+This allows the application buffer to be reused immediately after command completion
+and ensures that a later duplicate receives the original terminal result.
+
 ### Protocol sender session
 
 A tested HAL-independent sender session manages one outstanding command at a time.
@@ -335,6 +341,31 @@ In the opposite direction:
 `DESYNCHRONIZED` is distinct from `COMMUNICATION_FAILED`: a valid CRC-protected ACK proves that
 bidirectional communication works, but the sender and receiver disagree about protocol state.
 New commands remain blocked until an explicit session recovery policy is applied.
+
+### End-to-end loss recovery
+
+A host-side end-to-end test connects the real sender session, receiver session,
+frame encoder, streaming decoder, feedback codec, and session router.
+
+The tested scenario deliberately loses both the initial `ACCEPTED` ACK and the
+initial terminal RESPONSE:
+
+1. The sender transmits command sequence `42`.
+2. The receiver accepts and executes the command exactly once.
+3. The receiver stores terminal result data `AA BB CC`.
+4. The initial ACK and RESPONSE are discarded by the test transport.
+5. The sender reaches its response timeout and retransmits the identical encoded frame.
+6. The receiver classifies sequence `42` as a completed duplicate.
+7. The command is not executed again.
+8. The receiver retransmits the cached terminal RESPONSE.
+9. The sender receives the result and advances to sequence `43`.
+
+The retransmitted RESPONSE is verified byte-for-byte against the original lost
+RESPONSE. The test also modifies the application-owned result buffer after completion,
+proving that duplicate recovery uses the receiver's private copy rather than a borrowed pointer.
+
+This demonstrates at-most-once command execution with terminal-result recovery for
+message loss during a live stop-and-wait session.
 
 ### Command parser
 
@@ -504,6 +535,8 @@ The receiver-session tests cover:
 - deferred retry using the same sequence;
 - terminal success and failure commit;
 - cached-result retransmission without duplicate execution;
+- receiver-owned copying of optional terminal-result data;
+- preservation of cached data after the application buffer is modified;
 - out-of-order sequence reporting;
 - incorrect completion rejection;
 - 16-bit sequence wrap-around;
@@ -557,6 +590,20 @@ The router tests cover:
 - malformed-feedback routing errors;
 - ignored receiver decisions and unrelated frame types.
 
+### Protocol end-to-end recovery
+
+The end-to-end test covers:
+
+- complete sender-to-receiver frame transfer;
+- deliberate loss of the initial ACK and terminal RESPONSE;
+- response-timeout detection and identical command retransmission;
+- completed-duplicate classification;
+- prevention of duplicate application execution;
+- receiver-owned terminal-result storage;
+- byte-identical cached RESPONSE retransmission;
+- delivery of optional result data to sender-owned storage;
+- sequence advancement from `42` to `43` only after the result becomes known.
+
 ## Project structure
 
 ```text
@@ -576,6 +623,7 @@ tests/
 `-- test_protocol_sender_session.c Host-side sender-session tests
 `-- test_protocol_feedback.c Host-side ACK/RESPONSE message tests
 `-- test_protocol_session_router.c Host-side session-routing tests
+`-- test_protocol_end_to_end.c Host-side full protocol loss-recovery test
 Drivers/
 |-- CMSIS/                       ARM and STM32 device headers
 `-- STM32F4xx_HAL_Driver/        STM32 HAL drivers
