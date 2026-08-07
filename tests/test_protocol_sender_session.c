@@ -415,11 +415,23 @@ static void test_terminal_result_and_next_sequence(void)
         100U
     );
 
+    uint8_t result_payload[] =
+        { 0x11U, 0x22U, 0x33U };
+
     assert(protocol_sender_session_handle_result(
         &session,
         INITIAL_SEQUENCE,
-        result_failed
+        result_failed,
+        result_payload,
+        sizeof(result_payload)
     ));
+
+    // перевірка власної копії session
+    result_payload[0] = 0xFFU;
+    assert(session.result_data_length == 3U);
+    assert(session.result_data[0] == 0x11U);
+    assert(session.result_data[1] == 0x22U);
+    assert(session.result_data[2] == 0x33U);
 
     assert(
         session.state ==
@@ -480,7 +492,9 @@ static void test_late_result_during_retry(void)
     assert(protocol_sender_session_handle_result(
         &session,
         INITIAL_SEQUENCE,
-        0U
+        0U,
+	    NULL,
+	    0U
     ));
 
     assert(
@@ -597,7 +611,9 @@ static void test_reset_preserves_diagnostics(void)
     assert(protocol_sender_session_handle_result(
         &session,
         INITIAL_SEQUENCE,
-        0U
+        0U,
+	    NULL,
+	    0U
     ));
 
     assert(protocol_sender_session_release_result(
@@ -662,7 +678,9 @@ static void test_late_result_recovers_failure(void)
     assert(protocol_sender_session_handle_result(
         &session,
         INITIAL_SEQUENCE,
-        0U
+        0U,
+	    NULL,
+	    0U
     ));
 
     assert(
@@ -717,7 +735,9 @@ static void test_sequence_wrap_around(void)
     assert(protocol_sender_session_handle_result(
         &session,
         UINT16_MAX,
-        0U
+        0U,
+	    NULL,
+	    0U
     ));
 
     assert(session.next_sequence == 0U);
@@ -759,6 +779,139 @@ static void test_reset_rejected_during_transmission(void)
            INITIAL_SEQUENCE);
 }
 
+static void test_out_of_order_desynchronizes_sender(
+    void
+)
+{
+    ProtocolSenderSession session;
+
+    init_session(&session);
+    start_command(&session);
+
+    accept_and_complete_transmission(
+        &session,
+        100U
+    );
+
+    assert(
+        protocol_sender_session_handle_out_of_order(
+            &session,
+            INITIAL_SEQUENCE,
+            INITIAL_SEQUENCE - 1U
+        )
+    );
+
+    assert(
+        session.state ==
+        PROTOCOL_SENDER_STATE_DESYNCHRONIZED
+    );
+
+    assert(
+        session.receiver_expected_sequence ==
+        INITIAL_SEQUENCE - 1U
+    );
+
+    assert(session.out_of_order_count == 1U);
+
+    assert(
+        session.communication_failure_count == 0U
+    );
+
+    assert(!protocol_sender_session_start_command(
+        &session,
+        NULL,
+        0U
+    ));
+}
+
+static void test_late_out_of_order_during_retry(
+    void
+)
+{
+    ProtocolSenderSession session;
+
+    init_session(&session);
+    start_command(&session);
+
+    accept_and_complete_transmission(
+        &session,
+        100U
+    );
+
+    protocol_sender_session_poll(
+        &session,
+        200U
+    );
+
+    assert(protocol_sender_session_mark_accepted(
+        &session
+    ));
+
+    assert(session.transmission_active);
+    assert(session.attempt_count == 2U);
+
+    assert(
+        protocol_sender_session_handle_out_of_order(
+            &session,
+            INITIAL_SEQUENCE,
+            INITIAL_SEQUENCE - 1U
+        )
+    );
+
+    assert(
+        session.state ==
+        PROTOCOL_SENDER_STATE_DESYNCHRONIZED
+    );
+
+    assert(session.transmission_active);
+
+    /*
+     * Завершення вже активного retry
+     * не повинно стерти desynchronized state.
+     */
+    assert(protocol_sender_session_mark_transmitted(
+        &session,
+        220U
+    ));
+
+    assert(!session.transmission_active);
+
+    assert(
+        session.state ==
+        PROTOCOL_SENDER_STATE_DESYNCHRONIZED
+    );
+}
+
+static void test_wrong_sequence_out_of_order_ignored(
+    void
+)
+{
+    ProtocolSenderSession session;
+
+    init_session(&session);
+    start_command(&session);
+
+    accept_and_complete_transmission(
+        &session,
+        100U
+    );
+
+    assert(
+        !protocol_sender_session_handle_out_of_order(
+            &session,
+            INITIAL_SEQUENCE + 1U,
+            INITIAL_SEQUENCE
+        )
+    );
+
+    assert(
+        session.state ==
+        PROTOCOL_SENDER_STATE_WAITING_RESULT
+    );
+
+    assert(session.out_of_order_count == 0U);
+}
+
 int main(void)
 {
     test_initialization();
@@ -774,6 +927,9 @@ int main(void)
     test_late_result_recovers_failure();
     test_sequence_wrap_around();
     test_reset_rejected_during_transmission();
+    test_out_of_order_desynchronizes_sender();
+    test_late_out_of_order_during_retry();
+    test_wrong_sequence_out_of_order_ignored();
     puts("All protocol sender session tests passed.");
     return 0;
 }

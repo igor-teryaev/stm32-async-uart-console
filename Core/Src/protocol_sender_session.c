@@ -13,6 +13,8 @@ static void protocol_sender_session_clear_operation(
 	session->last_activity_ms = 0U;
 	session->attempt_count = 0U;
 	session->result_code = 0U;
+	session->receiver_expected_sequence = 0U;
+	session->result_data_length = 0U;
 }
 
 bool protocol_sender_session_init(ProtocolSenderSession *session,
@@ -38,10 +40,8 @@ bool protocol_sender_session_init(ProtocolSenderSession *session,
 bool protocol_sender_session_reset(ProtocolSenderSession *session,
 		uint16_t initial_sequence) {
 
-	if ((session == NULL) ||
-	    session->transmission_active)
-	{
-	    return false;
+	if ((session == NULL) || session->transmission_active) {
+		return false;
 	}
 
 	/*
@@ -127,7 +127,8 @@ bool protocol_sender_session_mark_transmitted(ProtocolSenderSession *session,
 		uint32_t now_ms) {
 	if ((session == NULL) || !session->transmission_active
 			|| ((session->state != PROTOCOL_SENDER_STATE_SENDING)
-					&& (session->state != PROTOCOL_SENDER_STATE_RESULT_READY))) {
+					&& (session->state != PROTOCOL_SENDER_STATE_RESULT_READY)
+					&& (session->state != PROTOCOL_SENDER_STATE_DESYNCHRONIZED))) {
 		return false;
 	}
 
@@ -137,7 +138,8 @@ bool protocol_sender_session_mark_transmitted(ProtocolSenderSession *session,
 	 * Terminal result міг надійти під час
 	 * повторної фізичної передачі.
 	 */
-	if (session->state == PROTOCOL_SENDER_STATE_RESULT_READY) {
+	if ((session->state == PROTOCOL_SENDER_STATE_RESULT_READY)
+			|| (session->state == PROTOCOL_SENDER_STATE_DESYNCHRONIZED)) {
 		return true;
 	}
 
@@ -151,7 +153,8 @@ bool protocol_sender_session_mark_transmitted(ProtocolSenderSession *session,
 bool protocol_sender_session_mark_transmit_error(ProtocolSenderSession *session) {
 	if ((session == NULL) || !session->transmission_active
 			|| ((session->state != PROTOCOL_SENDER_STATE_SENDING)
-					&& (session->state != PROTOCOL_SENDER_STATE_RESULT_READY))) {
+					&& (session->state != PROTOCOL_SENDER_STATE_RESULT_READY)
+					&& (session->state != PROTOCOL_SENDER_STATE_DESYNCHRONIZED))) {
 		return false;
 	}
 
@@ -162,7 +165,8 @@ bool protocol_sender_session_mark_transmit_error(ProtocolSenderSession *session)
 	 * помилка зайвої повторної передачі
 	 * не змінює відомий результат команди.
 	 */
-	if (session->state == PROTOCOL_SENDER_STATE_RESULT_READY) {
+	if ((session->state == PROTOCOL_SENDER_STATE_RESULT_READY)
+			|| (session->state == PROTOCOL_SENDER_STATE_DESYNCHRONIZED)) {
 		return true;
 	}
 
@@ -203,8 +207,8 @@ void protocol_sender_session_poll(ProtocolSenderSession *session,
 	}
 }
 
-bool protocol_sender_session_handle_in_progress(ProtocolSenderSession *session,
-		uint16_t sequence, uint32_t now_ms) {
+static bool protocol_sender_session_handle_activity_feedback(
+		ProtocolSenderSession *session, uint16_t sequence, uint32_t now_ms) {
 	bool valid_state;
 
 	if ((session == NULL) || (sequence != session->pending_sequence)
@@ -220,8 +224,6 @@ bool protocol_sender_session_handle_in_progress(ProtocolSenderSession *session,
 	if (!valid_state) {
 		return false;
 	}
-
-	session->in_progress_count++;
 
 	/*
 	 * Якщо retry ще лише запланований,
@@ -250,29 +252,57 @@ bool protocol_sender_session_handle_in_progress(ProtocolSenderSession *session,
 	return true;
 }
 
-bool protocol_sender_session_handle_result(ProtocolSenderSession *session,
-		uint16_t sequence, uint8_t result_code) {
-	bool valid_state;
-
-	if ((session == NULL) || (sequence != session->pending_sequence)
-			|| (session->attempt_count == 0U)) {
+bool protocol_sender_session_handle_accepted(ProtocolSenderSession *session,
+		uint16_t sequence, uint32_t now_ms) {
+	if (!protocol_sender_session_handle_activity_feedback(session, sequence,
+			now_ms)) {
 		return false;
 	}
 
-	valid_state =
-	    (session->state ==
-	     PROTOCOL_SENDER_STATE_WAITING_RESULT) ||
-	    (session->state ==
-	     PROTOCOL_SENDER_STATE_READY_TO_SEND) ||
-	    (session->state ==
-	     PROTOCOL_SENDER_STATE_COMMUNICATION_FAILED) ||
-	    ((session->state ==
-	      PROTOCOL_SENDER_STATE_SENDING) &&
-	     (session->attempt_count > 1U));
+	session->accepted_ack_count++;
+
+	return true;
+}
+
+bool protocol_sender_session_handle_in_progress(ProtocolSenderSession *session,
+		uint16_t sequence, uint32_t now_ms) {
+	if (!protocol_sender_session_handle_activity_feedback(session, sequence,
+			now_ms)) {
+		return false;
+	}
+
+	session->in_progress_count++;
+
+	return true;
+}
+
+bool protocol_sender_session_handle_result(ProtocolSenderSession *session,
+		uint16_t sequence, uint8_t result_code, const uint8_t *result_data,
+		size_t result_data_length) {
+	bool valid_state;
+
+	if ((session == NULL) || (sequence != session->pending_sequence)
+			|| (session->attempt_count == 0U) || (result_data_length >
+			PROTOCOL_RESPONSE_MAX_DATA_SIZE)
+			|| ((result_data_length > 0U) && (result_data == NULL))) {
+		return false;
+	}
+
+	valid_state = (session->state == PROTOCOL_SENDER_STATE_WAITING_RESULT)
+			|| (session->state == PROTOCOL_SENDER_STATE_READY_TO_SEND)
+			|| (session->state == PROTOCOL_SENDER_STATE_COMMUNICATION_FAILED)
+			|| ((session->state == PROTOCOL_SENDER_STATE_SENDING)
+					&& (session->attempt_count > 1U));
 
 	if (!valid_state) {
 		return false;
 	}
+
+	if (result_data_length > 0U) {
+		memcpy(session->result_data, result_data, result_data_length);
+	}
+
+	session->result_data_length = result_data_length;
 
 	session->result_code = result_code;
 
@@ -297,6 +327,34 @@ bool protocol_sender_session_release_result(ProtocolSenderSession *session) {
 	next_sequence = session->next_sequence;
 
 	protocol_sender_session_clear_operation(session, next_sequence);
+
+	return true;
+}
+
+bool protocol_sender_session_handle_out_of_order(ProtocolSenderSession *session,
+		uint16_t sequence, uint16_t expected_sequence) {
+	bool valid_state;
+
+	if ((session == NULL) || (sequence != session->pending_sequence)
+			|| (session->attempt_count == 0U)) {
+		return false;
+	}
+
+	valid_state = (session->state == PROTOCOL_SENDER_STATE_WAITING_RESULT)
+			|| (session->state == PROTOCOL_SENDER_STATE_READY_TO_SEND)
+			|| (session->state == PROTOCOL_SENDER_STATE_COMMUNICATION_FAILED)
+			|| ((session->state == PROTOCOL_SENDER_STATE_SENDING)
+					&& (session->attempt_count > 1U));
+
+	if (!valid_state) {
+		return false;
+	}
+
+	session->receiver_expected_sequence = expected_sequence;
+
+	session->state = PROTOCOL_SENDER_STATE_DESYNCHRONIZED;
+
+	session->out_of_order_count++;
 
 	return true;
 }
