@@ -60,6 +60,10 @@ The project demonstrates a bare-metal producer-consumer architecture without an 
 - Incremental CRC-16/CCITT-FALSE integrity calculation
 - Versioned binary frame format with explicit big-endian serialization
 - CRC-protected frame encoder
+- Typed ACK feedback with `ACCEPTED`, `IN_PROGRESS`, and `OUT_OF_ORDER` statuses
+- Explicit expected-sequence reporting for out-of-order commands
+- Terminal RESPONSE messages with result code and optional result data
+- Zero-copy borrowed views of decoded response data
 - Streaming frame decoder with noise rejection and resynchronization
 - Stop-and-wait sequence tracking with duplicate and out-of-order detection
 - Correct 16-bit sequence wrap-around
@@ -221,6 +225,33 @@ The decoder accepts one byte at a time and supports:
 - oversized-length rejection;
 - CRC-error detection;
 - stream resynchronization after errors.
+
+### Protocol feedback messages
+
+HAL-independent feedback helpers encode and decode ACK and terminal RESPONSE frames.
+
+The frame-header sequence always identifies the command being answered.
+
+ACK payloads use the following format:
+
+| Status | Payload size | Payload |
+|---|---:|---|
+| `ACCEPTED` | 1 | status byte |
+| `IN_PROGRESS` | 1 | status byte |
+| `OUT_OF_ORDER` | 3 | status byte followed by expected sequence, big-endian |
+
+For an out-of-order command, the ACK header contains the rejected command sequence, while the payload contains the sequence expected by the receiver.
+
+Terminal RESPONSE payloads use:
+
+| Offset | Size | Field |
+|---:|---:|---|
+| 0 | 1 | result code |
+| 1 | 0–63 | optional result data |
+
+A decoded RESPONSE exposes its optional data through a borrowed pointer into the decoded `ProtocolFrame`.
+The pointer remains valid only until that frame is reused or modified.
+Callers that need to retain the data must copy it into application-owned storage.
 
 ### Protocol receiver session
 
@@ -459,6 +490,21 @@ The sender-session tests cover:
 - 16-bit sequence wrap-around;
 - session reset with diagnostic preservation.
 
+### Protocol feedback messages
+
+The feedback-message tests cover:
+
+- `ACCEPTED` and `IN_PROGRESS` ACK encoding;
+- `OUT_OF_ORDER` ACK with big-endian expected sequence;
+- ACK frame/command sequence correlation;
+- unknown status and malformed-length rejection;
+- atomic preservation of outputs after decode failure;
+- terminal responses with no optional data;
+- terminal responses with normal and maximum-size data;
+- zero-copy borrowed response-data views;
+- invalid and oversized response rejection;
+- end-to-end encode/decode through the streaming frame decoder.
+
 ## Project structure
 
 ```text
@@ -476,6 +522,7 @@ tests/
 `-- test_protocol_sequence_tracker.c Host-side sequence-tracker tests
 `-- test_protocol_receiver_session.c Host-side receiver-session tests
 `-- test_protocol_sender_session.c Host-side sender-session tests
+`-- test_protocol_feedback.c Host-side ACK/RESPONSE message tests
 Drivers/
 |-- CMSIS/                       ARM and STM32 device headers
 `-- STM32F4xx_HAL_Driver/        STM32 HAL drivers
@@ -508,6 +555,8 @@ and cached terminal-result retransmission are implemented in `Core/Src/protocol_
 Sender-side timeout handling, retransmission scheduling, transmission ownership,
 terminal-result handling, and late-result recovery are implemented in `Core/Src/protocol_sender_session.c`.
 
+Typed ACK and terminal RESPONSE serialization, validation, and zero-copy response-data views are implemented in `Core/Src/protocol_feedback.c`.
+
 ## Build and run
 
 1. Clone the repository.
@@ -527,6 +576,8 @@ Peripheral configuration changes should be made in standalone STM32CubeMX using 
 - The active UART console remains line-oriented; the tested binary frame codec is not yet integrated.
 - The receiver caches only the most recent terminal result in RAM; reset or power loss clears this state.
 - The tested sender and receiver sessions are not yet connected to the frame decoder, UART transport, or application command execution.
+- Feedback messages are tested independently but are not yet routed between the receiver/sender sessions and the UART transport.
+- Decoded response-data pointers are borrowed and must be consumed or copied before the decoder reuses its frame storage.
 - A sender communication failure still requires session resynchronization if no late terminal result arrives.
 - Session identifiers and startup/resynchronization handshake are not yet implemented.
 - `IN_PROGRESS` renews the response timeout, but a separate maximum operation-duration timeout is not yet implemented.
@@ -535,7 +586,6 @@ Peripheral configuration changes should be made in standalone STM32CubeMX using 
 ## Planned improvements
 
 - Integrate the binary frame codec and sender/receiver sessions with the UART transport and application command execution
-- Define framed `IN_PROGRESS` and terminal-result payloads
 - Implement session identifiers and startup/resynchronization handshake
 - Add an independent maximum operation-duration timeout
 - Add telemetry-oriented message handling
