@@ -64,6 +64,11 @@ The project demonstrates a bare-metal producer-consumer architecture without an 
 - Explicit expected-sequence reporting for out-of-order commands
 - Terminal RESPONSE messages with result code and optional result data
 - Zero-copy borrowed views of decoded response data
+- HAL-independent routing from receiver decisions to ACK/RESPONSE frames
+- Routing of decoded feedback into sender session state transitions
+- Explicit sender desynchronization detection and reported expected sequence
+- Sender-owned copies of terminal response data
+- Separate diagnostics for `ACCEPTED`, `IN_PROGRESS`, and `OUT_OF_ORDER`
 - Streaming frame decoder with noise rejection and resynchronization
 - Stop-and-wait sequence tracking with duplicate and out-of-order detection
 - Correct 16-bit sequence wrap-around
@@ -295,8 +300,41 @@ This means that the command outcome is unknown, not that the receiver definitely
 
 A matching late terminal result may recover this state because no later command can start while the session remains failed.
 
+Optional terminal-response data is copied into sender-owned storage so it remains valid after the streaming decoder reuses its internal frame.
+
+An `OUT_OF_ORDER` ACK records the receiver's expected sequence and enters `DESYNCHRONIZED`;
+the sender does not automatically reuse that sequence because it may belong to a different previously processed command.
+
 The pending encoded frame remains owned by the sender session until any active transport operation completes.
 This prevents a new command from overwriting memory still being read by a zero-copy transport.
+
+### Protocol session routing
+
+A HAL-independent router connects receiver decisions, feedback frames, and sender state transitions.
+
+Receiver actions map to wire messages as follows:
+
+| Receiver action | Routed result |
+|---|---|
+| `EXECUTE` | ACK `ACCEPTED` |
+| `IN_PROGRESS` | ACK `IN_PROGRESS` |
+| `RESEND_RESULT` | cached terminal RESPONSE |
+| `OUT_OF_ORDER` | ACK `OUT_OF_ORDER` with expected sequence |
+| `IGNORED` | no response |
+| `INVALID` | routing error |
+
+In the opposite direction:
+
+- `ACCEPTED` and `IN_PROGRESS` renew the sender response timeout;
+- terminal RESPONSE data is copied into sender-owned storage;
+- `OUT_OF_ORDER` moves the sender to `DESYNCHRONIZED`;
+- valid feedback for a different sequence is ignored;
+- malformed ACK or RESPONSE payloads produce a routing error;
+- unrelated frame types such as telemetry are ignored.
+
+`DESYNCHRONIZED` is distinct from `COMMUNICATION_FAILED`: a valid CRC-protected ACK proves that
+bidirectional communication works, but the sender and receiver disagree about protocol state.
+New commands remain blocked until an explicit session recovery policy is applied.
 
 ### Command parser
 
@@ -505,6 +543,20 @@ The feedback-message tests cover:
 - invalid and oversized response rejection;
 - end-to-end encode/decode through the streaming frame decoder.
 
+### Protocol session router
+
+The router tests cover:
+
+- receiver-action mapping to typed ACK and RESPONSE frames;
+- end-to-end frame encoding and streaming decoding;
+- accepted and in-progress timeout renewal;
+- cached terminal-result delivery;
+- optional response-data ownership transfer;
+- out-of-order desynchronization;
+- foreign-sequence feedback rejection;
+- malformed-feedback routing errors;
+- ignored receiver decisions and unrelated frame types.
+
 ## Project structure
 
 ```text
@@ -523,6 +575,7 @@ tests/
 `-- test_protocol_receiver_session.c Host-side receiver-session tests
 `-- test_protocol_sender_session.c Host-side sender-session tests
 `-- test_protocol_feedback.c Host-side ACK/RESPONSE message tests
+`-- test_protocol_session_router.c Host-side session-routing tests
 Drivers/
 |-- CMSIS/                       ARM and STM32 device headers
 `-- STM32F4xx_HAL_Driver/        STM32 HAL drivers
@@ -557,6 +610,8 @@ terminal-result handling, and late-result recovery are implemented in `Core/Src/
 
 Typed ACK and terminal RESPONSE serialization, validation, and zero-copy response-data views are implemented in `Core/Src/protocol_feedback.c`.
 
+Receiver-decision encoding and decoded-feedback routing are implemented in `Core/Src/protocol_session_router.c`.
+
 ## Build and run
 
 1. Clone the repository.
@@ -575,8 +630,7 @@ Peripheral configuration changes should be made in standalone STM32CubeMX using 
 - The STM32 UART TX adapter has been validated on NUCLEO-F446RE hardware but is not covered by automated host-side HAL mocks.
 - The active UART console remains line-oriented; the tested binary frame codec is not yet integrated.
 - The receiver caches only the most recent terminal result in RAM; reset or power loss clears this state.
-- The tested sender and receiver sessions are not yet connected to the frame decoder, UART transport, or application command execution.
-- Feedback messages are tested independently but are not yet routed between the receiver/sender sessions and the UART transport.
+- Session routing is host-tested but is not yet integrated into the STM32 UART receive/transmit path or application command execution.
 - Decoded response-data pointers are borrowed and must be consumed or copied before the decoder reuses its frame storage.
 - A sender communication failure still requires session resynchronization if no late terminal result arrives.
 - Session identifiers and startup/resynchronization handshake are not yet implemented.
